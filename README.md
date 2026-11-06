@@ -343,3 +343,43 @@ The script prints all counts and removes only its own containers/volume on exit.
 KEEP_STACK=1 retains that isolated project and prints the mode-600 credentials file path.
 The test receiver is an optional smoke profile, built from test classes with no new dependencies;
 it is not included in the production app image or its normal Compose services.
+
+## Kubernetes (Phase 7)
+
+Manifests use Kustomize: base contains API/worker Deployments, Service, ConfigMap, worker PDB,
+CPU HPA (min 2/max 10), probes, resource bounds, security contexts, and 90-second termination.
+The local overlay adds PostgreSQL 16 with persistent storage and disables the HPA so manual
+1 → 5 → 1 scaling is not overridden. Prod keeps HPA and uses a managed DB connection from Secret.
+Secret templates contain placeholders and are excluded from apply; create actual credentials first.
+The prod overlay mounts a separately supplied scheduler-database-ca ConfigMap for verified TLS.
+
+Run the complete isolated local exercise (Docker, kind, kubectl, Python 3, and Git required):
+
+```bash
+./scripts/k8s-smoke.sh
+# To retain the test cluster for inspection:
+KEEP_CLUSTER=1 ./scripts/k8s-smoke.sh
+```
+
+This builds/loads SHA-tagged images, creates a fresh cluster/namespace/credentials, deploys
+PostgreSQL and the app, runs 100 jobs across worker counts 1 → 5 → 1, and deletes the pod
+owning a live job. Graceful termination finishes that run; a replacement drains remaining work.
+The test asserts 100 successes, zero LOST runs, and exactly 100 HTTP attempts/effects.
+It refuses to replace an existing scheduler namespace. KEEP_CLUSTER=1 prints the retained
+kubeconfig/credential paths (mode 600); otherwise it cleans up only its own cluster/namespace.
+
+Render deployable manifests with an explicit git SHA without editing committed templates:
+
+```bash
+./scripts/render-k8s.sh local "$(git rev-parse --short HEAD)"
+./scripts/render-k8s.sh prod "$(git rev-parse HEAD)"
+```
+
+The renderer uses kubectl kustomize, then replaces only image-tag placeholders. Validate
+with `kubectl apply --dry-run=server -f -`, or apply after creating the Secret and loading/
+publishing that image. API access uses `kubectl -n scheduler port-forward svc/scheduler-api 8080:80`.
+The local test receiver/SSRF host override exist only in k8s/smoke, not the production overlay.
+PDB protects voluntary evictions; direct kubectl delete bypasses PDB, while normal pod deletion
+still honors graceful termination. A force kill can repeat HTTP attempts, as the Docker test shows.
+CPU HPA requires metrics-server; the local manual exercise does not install or test CPU autoscaling.
+See docs/VERIFICATION.md for exact verification commands and observed counts.

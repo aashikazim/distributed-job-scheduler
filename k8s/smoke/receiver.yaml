@@ -1,0 +1,60 @@
+# Test-only fixture; apply separately, never in the production overlay.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scheduler-smoke-target
+  namespace: scheduler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: scheduler-smoke-target
+  template:
+    metadata:
+      labels:
+        app: scheduler-smoke-target
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: target
+          image: job-scheduler-smoke:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 2
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: scheduler-smoke-target
+  namespace: scheduler
+spec:
+  selector:
+    app: scheduler-smoke-target
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

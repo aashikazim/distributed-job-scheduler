@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: scheduler
+resources:
+  - ../../base
+  - postgres.yaml
+replicas:
+  - name: scheduler-api
+    count: 1
+  - name: scheduler-worker
+    count: 1
+patches:
+  # Keep manual 1 -> 5 -> 1 exercises from competing with the production HPA minimum.
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: scheduler-worker
+    patch: |-
+      $patch: delete
+      apiVersion: autoscaling/v2
+      kind: HorizontalPodAutoscaler
+      metadata:
+        name: scheduler-worker

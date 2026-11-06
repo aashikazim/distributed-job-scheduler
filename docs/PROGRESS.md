@@ -188,11 +188,35 @@
   The killed worker's request was retried after lease expiry. Receiver deduplication by stable
   one-time job ID prevented a duplicate effect; exactly-once scheduler delivery is not claimed.
 - Documented Docker commands and appended learning notes. No runtime dependency/schema changes.
-- Next: Phase 7 Kubernetes. Phase 6 committed before starting Phase 7.
+- Phase 6 committed as 334c739 before starting Phase 7.
+
+## Phase 7 — Kubernetes
+
+- Added Kustomize base plus local/prod overlays: separate API/worker Deployments, API Service,
+  nonsecret ConfigMap, excluded placeholder-only Secret template, startup/readiness/liveness probes,
+  resource bounds, non-root/read-only security contexts, tmpfs, disabled service-account mounting,
+  90-second termination, worker PDB minAvailable=1, and CPU HPA min=2/max=10.
+- Local adds PostgreSQL 16 StatefulSet/PVC and removes HPA for manual scaling. Prod references
+  managed Postgres via Secret and mounts a provider CA ConfigMap for verified database TLS.
+- Added SHA-based manifest renderer and isolated kind scaling/delete smoke scripts/overlay.
+  Test receiver slow/hold endpoints let the test observe work during scaling and termination.
+- Installed checksum-verified kind 0.33.0 and kubectl 1.37.2 under /tmp; created kind cluster
+  scheduler (Kubernetes 1.37.0), using /tmp/scheduler-kind.kubeconfig without changing user kubeconfig.
+- Fixed an overlay namespace composition issue found on the first rollout; cleaned up only the
+  failed fresh deployment. Base, local, smoke, and prod render correctly; base/prod server dry-run passed.
+- `./mvnw verify` passed: 111 tests, 0 failures/errors/skips. SHA-tagged images built/loaded.
+- Actual kind smoke passed: scaled ready workers 1 → 5 → 1, deleted the owning pod during a live run,
+  and allowed graceful completion. 100 COMPLETED jobs, 100 SUCCEEDED runs, 0 LOST runs,
+  100 HTTP attempts, 100 receiver effects. Six node identities executed work across the exercise.
+- Final API/worker/receiver/Postgres pods Ready; PostgreSQL 1Gi PVC Bound; worker PDB present;
+  worker UID 10001. Cluster retained for review; port-forwards stopped. Its temporary credentials
+  remain in a mode-600 file and are not committed. Existing Docker services were untouched.
+- Next: Phase 8 CI/CD and final docs. Phase 7 committed before starting Phase 8.
 
 ## Deferred
 
-- DNS/socket pinning is not provided by Java HttpClient; application DNS checks complement
-  deployment-level egress restrictions.
-- Crash tests intentionally distinguish repeated attempts from deduplicated effects, consistent
-  with the specified at-least-once semantics. Arbitrary external effects cannot be guaranteed once.
+- CPU HPA schema is validated in base/prod; actual CPU autoscaling requires metrics-server and
+  was not load-tested in the local overlay, which intentionally disables HPA for manual scaling.
+- Cloud deployments remain documentation/managed-account work in Phase 8; no paid cloud resources created.
+- DNS/socket pinning is not provided by Java HttpClient; application DNS checks complement egress controls.
+- Hard crashes may repeat attempts; graceful scale/delete tests do not change at-least-once semantics.

@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: scheduler
+resources:
+  - ../overlays/local
+  - receiver.yaml
+patches:
+  - target:
+      kind: ConfigMap
+      name: scheduler-config
+    patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: scheduler-config
+      data:
+        SCHEDULER_HTTP_ALLOWED_HOSTS: scheduler-smoke-target
+        SCHEDULER_POLL_INTERVAL: 200ms
+        SCHEDULER_LEASE_DURATION: 6s
+        SCHEDULER_HEARTBEAT_INTERVAL: 1s
+        SCHEDULER_JANITOR_INTERVAL: 1s
+        SCHEDULER_MAX_CONCURRENT_RUNS: "5"

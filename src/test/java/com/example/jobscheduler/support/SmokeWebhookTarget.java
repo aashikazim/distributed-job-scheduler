@@ -60,6 +60,13 @@ public final class SmokeWebhookTarget {
                     Thread.currentThread().interrupt();
                 }
             }
+            if (exchange.getRequestURI().getPath().equals("/slow")) {
+                try {
+                    new CountDownLatch(1).await(500, TimeUnit.MILLISECONDS);
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                }
+            }
             respond(exchange, 200, "accepted");
         });
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {

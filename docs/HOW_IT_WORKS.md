@@ -112,3 +112,15 @@ The smoke test creates 100 jobs and kills the worker after the target accepted t
 A surviving worker retries after lease expiry, and the old run becomes LOST while the replacement succeeds.
 The test receiver records one effect per job ID and counts repeated HTTP attempts separately.
 The key concept: a container restart is safe for durable jobs, but an external effect still needs idempotency.
+
+## Phase 7 — Kubernetes rollout and scaling
+
+API and worker Deployments use the same image with different roles; only API has a client Service.
+Secrets are created separately so a Kustomize apply cannot replace credentials with placeholders.
+The complete overlay sets its namespace, including PostgreSQL resources added outside the base.
+Local PostgreSQL keeps data on a PVC; production uses a managed DB and a mounted provider CA.
+Startup/readiness/liveness probes distinguish initialization, DB access, and process health.
+A 90-second termination budget lets Java stop polling and finish work before Kubernetes kills it.
+The PDB protects evictions and the production HPA controls worker count; local manual scaling omits HPA.
+The exercise scaled 1 → 5 → 1 and deleted an active owner, producing 100 successful runs and 100 HTTP attempts.
+The key concept: adding pods changes capacity, while leases and graceful termination protect the shared work.

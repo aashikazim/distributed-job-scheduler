@@ -1,0 +1,25 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: scheduler
+resources:
+  - ../../base
+images:
+  - name: job-scheduler
+    newName: ghcr.io/aashikazim/distributed-job-scheduler
+    newTag: REPLACE_WITH_GIT_SHA
+patches:
+  - target:
+      kind: Deployment
+    patch: |-
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: database-ca
+          configMap:
+            name: scheduler-database-ca
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value:
+          name: database-ca
+          mountPath: /etc/postgresql-ca
+          readOnly: true
