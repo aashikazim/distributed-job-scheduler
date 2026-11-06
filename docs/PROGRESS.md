@@ -245,6 +245,17 @@
 - Documentation checks: 56 relative links resolve, 18 Bash blocks parse, and Markdown code fences
   and whitespace checks pass. Application tests were not rerun for this documentation-only change.
 
+## CI fix — Polling resilience assertion race
+
+- GitHub Actions exposed a race in `PollingResilienceTest`: an empty poll reserves capacity
+  before claiming, so checking `inFlight() == 0` while polling is active is invalid.
+- Moved the zero-capacity-leak assertion after loop shutdown, retained the recovery checks,
+  and verified the runner never executes when claims are empty. Production code is unchanged.
+- Added a Q&A explaining the timing issue in the testing learning guide.
+- Verification: `./mvnw verify` with Java 21 and Docker-accessible PostgreSQL Testcontainers
+  passed all 111 tests, with zero failures/errors/skips. The initial sandbox-only focused run
+  could not initialize Mockito self-attachment; the full verification ran outside that restriction.
+
 ## Deferred
 
 - Main-only GHCR publication/pull has not run; it requires a successful main push. CI is green

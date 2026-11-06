@@ -71,6 +71,18 @@ uses independent scheduler instances against one PostgreSQL database. It verifie
 execute once in the normal concurrent scenario, and separately tests lease expiry, stale
 completion, retries, timeout, and graceful shutdown.
 
+## Why can a test pass locally but fail in CI?
+
+Concurrent threads can interleave differently on different machines. An assertion can be wrong
+if it assumes another thread is idle. For example, the polling loop briefly reserves a slot
+before asking PostgreSQL for jobs. Even an empty claim can temporarily make `inFlight()` equal
+one. Checking for zero during live polling is a race, not proof of a leaked execution slot.
+
+`PollingResilienceTest` checks that polling recovers after simulated database errors, then stops
+the loop before checking that all slots were returned. It also verifies no job executed for
+empty claims. This checks a stable outcome rather than guessing when a background poll is idle.
+Increasing a timeout or rerunning CI alone would not remove that invalid timing assumption.
+
 ## What is a smoke test?
 
 A smoke test is a broad check that a deployed system's main path works. It catches problems

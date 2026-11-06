@@ -28,13 +28,19 @@ class PollingResilienceTest {
         var properties = new SchedulerProperties(Duration.ofMillis(20), 1, 1,
                 Duration.ofSeconds(10), Duration.ofSeconds(2), Duration.ofSeconds(1),
                 Duration.ofSeconds(30), 30, Duration.ofSeconds(60));
-        try (var loop = new SchedulerLoop(claims, executions, runner, properties, "outage", janitor, mock(com.example.jobscheduler.config.SchedulerMetrics.class))) {
+        var loop = new SchedulerLoop(claims, executions, runner, properties, "outage", janitor,
+                mock(com.example.jobscheduler.config.SchedulerMetrics.class));
+        try (loop) {
             loop.start();
             await().atMost(Duration.ofSeconds(3)).untilAsserted(() ->
                     verify(claims, atLeast(4)).claim(eq("outage"), any(), eq(1)));
             assertThat(loop.isRunning()).isTrue();
-            assertThat(loop.inFlight()).isZero();
         }
+        // An active poll temporarily reserves capacity even when claim() returns no jobs.
+        // Shutdown serializes with claiming, so check for leaked permits only once polling stops.
+        assertThat(loop.isRunning()).isFalse();
+        assertThat(loop.inFlight()).isZero();
+        verify(runner, never()).run(any());
         verify(executions).release("outage");
         verify(runner).close();
     }
