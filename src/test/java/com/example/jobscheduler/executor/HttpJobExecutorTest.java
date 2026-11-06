@@ -77,13 +77,30 @@ class HttpJobExecutorTest {
         assertThat(TextLimit.truncate("hello\u0000world")).isEqualTo("helloworld");
     }
 
+    @Test
+    void defaultGuardBlocksLoopbackBeforeAnyRequestIsSent() {
+        http.stubFor(get("/blocked").willReturn(ok()));
+        var guarded = new HttpJobExecutor(new HttpPayloadValidator(json), Clock.systemUTC(),
+                new SsrfGuard(new com.example.jobscheduler.config.HttpProperties(java.util.List.of())));
+        try {
+            assertThatThrownBy(() -> guarded.validatePayload(context("/blocked", 5).payload()))
+                    .isInstanceOf(com.example.jobscheduler.api.ApiException.class);
+            assertThatThrownBy(() -> guarded.execute(context("/blocked", 5)))
+                    .isInstanceOf(com.example.jobscheduler.api.ApiException.class);
+            http.verify(0, getRequestedFor(urlEqualTo("/blocked")));
+        } finally {
+            guarded.destroy();
+        }
+    }
+
     private ExecutionContext context(String path, double seconds) {
         var payload = json.createObjectNode().put("url", http.baseUrl() + path).put("method", "GET");
         return new ExecutionContext(UUID.randomUUID(), UUID.randomUUID(), 1, payload, Instant.now().plusMillis((long) (seconds * 1000)));
     }
 
     private ExecutorResource executor() {
-        return new ExecutorResource(new HttpJobExecutor(new HttpPayloadValidator(json), Clock.systemUTC()));
+        return new ExecutorResource(new HttpJobExecutor(new HttpPayloadValidator(json), Clock.systemUTC(),
+                new SsrfGuard(new com.example.jobscheduler.config.HttpProperties(java.util.List.of("localhost", "127.0.0.1")))));
     }
 
     private record ExecutorResource(HttpJobExecutor value) implements AutoCloseable {

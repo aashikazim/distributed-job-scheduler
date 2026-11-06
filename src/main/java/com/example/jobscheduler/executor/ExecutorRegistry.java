@@ -21,6 +21,10 @@ public class ExecutorRegistry {
         executors = Map.copyOf(registered);
     }
 
+    public java.util.Set<String> types() {
+        return executors.keySet();
+    }
+
     public JobExecutor get(String type) {
         var executor = executors.get(type);
         if (executor == null) {

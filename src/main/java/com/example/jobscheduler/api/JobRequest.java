@@ -33,6 +33,11 @@ public record JobRequest(
         MisfirePolicy misfirePolicy,
         @Min(0) @Schema(description = "Required for PUT; use the version from the latest response. Omit for POST.") Long version) {
 
+    @Override
+    public String toString() {
+        return "JobRequest[definition=<redacted>]";
+    }
+
     public JobRequest {
         timezone = timezone == null ? "UTC" : timezone;
         maxRetries = maxRetries == null ? 3 : maxRetries;

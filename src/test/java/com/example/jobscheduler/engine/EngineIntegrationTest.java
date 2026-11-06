@@ -37,7 +37,8 @@ import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.wireMoc
 import static org.assertj.core.api.Assertions.*;
 import static org.awaitility.Awaitility.await;
 
-@SpringBootTest(properties = "scheduler.enabled=false")
+@SpringBootTest(properties = {"scheduler.enabled=false", "scheduler.api-key=test-only-key",
+        "scheduler.http.allowed-hosts=example.com,127.0.0.1,localhost"})
 @Import(EngineIntegrationTest.Executors.class)
 class EngineIntegrationTest extends PostgresIntegrationTest {
     private final JdbcTemplate jdbc;
@@ -46,13 +47,15 @@ class EngineIntegrationTest extends PostgresIntegrationTest {
     private final io.micrometer.core.instrument.MeterRegistry metrics;
     private final JobExecutionRepository executions;
     private final ExecutorRegistry registry;
+    private final com.example.jobscheduler.config.SchedulerMetrics schedulerMetrics;
     private final RecordingExecutor recorder;
     private final TransactionTemplate transactions;
     private final jakarta.persistence.EntityManagerFactory entityManagerFactory;
 
     @Autowired
     EngineIntegrationTest(JdbcTemplate jdbc, JobClaimRepository claims, JobExecutionRepository executions,
-                          ExecutorRegistry registry, RecordingExecutor recorder, Janitor janitor, io.micrometer.core.instrument.MeterRegistry metrics,
+                          ExecutorRegistry registry, RecordingExecutor recorder, Janitor janitor,
+                          com.example.jobscheduler.config.SchedulerMetrics schedulerMetrics, io.micrometer.core.instrument.MeterRegistry metrics,
                           org.springframework.transaction.PlatformTransactionManager manager, jakarta.persistence.EntityManagerFactory entityManagerFactory) {
         this.jdbc = jdbc;
         this.janitor = janitor;
@@ -61,6 +64,7 @@ class EngineIntegrationTest extends PostgresIntegrationTest {
         this.claims = claims;
         this.executions = executions;
         this.registry = registry;
+        this.schedulerMetrics = schedulerMetrics;
         this.recorder = recorder;
         transactions = new TransactionTemplate(manager);
     }
@@ -69,6 +73,7 @@ class EngineIntegrationTest extends PostgresIntegrationTest {
     void reset() {
         jdbc.execute("TRUNCATE jobs CASCADE");
         recorder.counts.clear();
+        recorder.contexts.clear();
         recorder.interrupted.clear();
         recorder.gate = null;
         recorder.entered = null;
@@ -83,6 +88,7 @@ class EngineIntegrationTest extends PostgresIntegrationTest {
     }
 
     static class RecordingExecutor implements JobExecutor {
+        final Map<UUID, Map<String, String>> contexts = new ConcurrentHashMap<>();
         final Map<UUID, AtomicInteger> counts = new ConcurrentHashMap<>();
         final Map<UUID, AtomicInteger> interrupted = new ConcurrentHashMap<>();
         volatile CountDownLatch gate;
@@ -99,6 +105,8 @@ class EngineIntegrationTest extends PostgresIntegrationTest {
 
         @Override
         public ExecutionResult execute(ExecutionContext context) throws Exception {
+            var mdc = org.slf4j.MDC.getCopyOfContextMap();
+            contexts.put(context.jobId(), mdc == null ? Map.of() : Map.copyOf(mdc));
             counts.computeIfAbsent(context.jobId(), id -> new AtomicInteger()).incrementAndGet();
             if (entered != null) {
                 entered.countDown();
@@ -327,7 +335,7 @@ class EngineIntegrationTest extends PostgresIntegrationTest {
         recorder.gate = new CountDownLatch(1);
         recorder.entered = new CountDownLatch(1);
         var snapshot = claims.claim("dead-worker", properties.leaseDuration(), 1).getFirst();
-        var deadRunner = new JobRunner(executions, registry, properties, Clock.systemUTC(), "dead-worker");
+        var deadRunner = new JobRunner(executions, registry, properties, Clock.systemUTC(), "dead-worker", schedulerMetrics);
         var coordinator = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor();
         try {
             var task = coordinator.submit(() -> deadRunner.run(snapshot));
@@ -568,6 +576,33 @@ class EngineIntegrationTest extends PostgresIntegrationTest {
         }
     }
 
+    @Test
+    void executionMetricsAndVirtualThreadMdcTrackRealRun() throws Exception {
+        var id = job("observed", -1);
+        double before = metrics.counter("scheduler_runs_total", "type", "RECORD", "outcome", "SUCCEEDED").count();
+        recorder.gate = new CountDownLatch(1);
+        recorder.entered = new CountDownLatch(1);
+        try (var worker = loop("observed-node", 1, 1)) {
+            worker.start();
+            assertThat(recorder.entered.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(metrics.get("scheduler_running").gauge().value()).isEqualTo(1);
+            assertThat(recorder.contexts.get(id)).containsEntry("nodeId", "observed-node").containsEntry("jobId", id.toString());
+            assertThat(recorder.contexts.get(id).get("runId"))
+                    .isEqualTo(jdbc.queryForObject("SELECT id FROM job_runs WHERE job_id = ?", UUID.class, id).toString());
+            recorder.gate.countDown();
+            await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> {
+                assertThat(status(id)).isEqualTo("COMPLETED");
+                assertThat(metrics.get("scheduler_running").gauge().value()).isZero();
+                assertThat(metrics.counter("scheduler_runs_total", "type", "RECORD", "outcome", "SUCCEEDED").count()).isEqualTo(before + 1);
+            });
+            assertThat(metrics.get("scheduler_claim_duration").timer().count()).isPositive();
+            assertThat(metrics.counter("scheduler_claimed_total").count()).isPositive();
+            assertThat(metrics.timer("scheduler_run_duration", "type", "RECORD", "outcome", "SUCCEEDED").count()).isPositive();
+        } finally {
+            recorder.gate.countDown();
+        }
+    }
+
     private String status(UUID id) {
         return jdbc.queryForObject("SELECT status FROM jobs WHERE id = ?", String.class, id);
     }
@@ -591,6 +626,6 @@ class EngineIntegrationTest extends PostgresIntegrationTest {
 
     private SchedulerLoop loop(String node, SchedulerProperties properties) {
         return new SchedulerLoop(claims, executions,
-                new JobRunner(executions, registry, properties, Clock.systemUTC(), node), properties, node, janitor);
+                new JobRunner(executions, registry, properties, Clock.systemUTC(), node, schedulerMetrics), properties, node, janitor, schedulerMetrics);
     }
 }

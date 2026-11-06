@@ -87,3 +87,16 @@ SKIP ignores slots older than the agreed 60-second cutoff, while explicit retrie
 Shutdown stops claims before waiting; on grace expiry it cancels work and clears ownership so another worker can resume.
 Polling survives database errors with backoff; if shutdown cannot reach PostgreSQL, leases expire naturally.
 The key concept: recovery can repeat an external effect, so at-least-once execution still needs idempotent targets.
+
+## Phase 5 — Observe and protect the scheduler
+
+The API key filter checks requests before controllers and compares fixed-length hashes without logging credentials.
+Role conditions create controllers for API/ALL and the engine for WORKER/ALL; worker HTTP exposes only actuator.
+The SSRF guard checks every resolved IP at validation and execution, with explicit host overrides for local tests.
+Redirects/proxies are disabled; Java's separate connection DNS lookup still calls for network egress controls against rebinding.
+Payload/request-size bounds and nesting limits protect parsing, while DTO diagnostics redact payloads and response bodies.
+Metrics count committed claims/dead letters and local attempts, and cache a database-clock view of due jobs and lag.
+Logstash JSON includes scoped job/run/node MDC; execution and heartbeat threads receive context explicitly.
+Readiness checks the DB and traffic state; liveness checks process state so DB outages do not cause restart storms.
+The real outage check returned readiness 503/liveness 200, then recovered both readiness and polling after DB restart.
+The key concept: global backlog describes shared work; local run metrics and logs explain what each pod is doing.

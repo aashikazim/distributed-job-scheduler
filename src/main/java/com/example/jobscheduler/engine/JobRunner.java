@@ -29,18 +29,20 @@ public class JobRunner implements AutoCloseable {
     private final SchedulerProperties properties;
     private final Clock clock;
     private final String nodeId;
+    private final com.example.jobscheduler.config.SchedulerMetrics metrics;
     private final AtomicBoolean closed = new AtomicBoolean();
     private final java.util.concurrent.ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
     private final ScheduledExecutorService heartbeats = Executors.newScheduledThreadPool(2,
             Thread.ofPlatform().daemon().name("job-heartbeat-", 0).factory());
 
     public JobRunner(JobExecutionRepository executions, ExecutorRegistry executors, SchedulerProperties properties,
-                     Clock clock, String nodeId) {
+                     Clock clock, String nodeId, com.example.jobscheduler.config.SchedulerMetrics metrics) {
         this.executions = executions;
         this.executors = executors;
         this.properties = properties;
         this.clock = clock;
         this.nodeId = nodeId;
+        this.metrics = metrics;
     }
 
     public void run(ClaimedJob job) {
@@ -56,6 +58,18 @@ public class JobRunner implements AutoCloseable {
         if (!executions.start(job, runId, nodeId) || closed.get()) {
             return;
         }
+        var sample = metrics.startRun();
+        String outcome = "LOST";
+        try (var logContext = new com.example.jobscheduler.util.LogContext(nodeId, job.id(), runId)) {
+            log.info("Job attempt started");
+            outcome = execute(job, runId);
+            log.info("Job attempt finished with outcome {}", outcome);
+        } finally {
+            metrics.finishRun(sample, job.jobType(), outcome);
+        }
+    }
+
+    private String execute(ClaimedJob job, UUID runId) {
         var lost = new AtomicBoolean();
         var context = new ExecutionContext(job.id(), runId, job.retryCount() + 1, job.payload(),
                 clock.instant().plusSeconds(job.timeoutSeconds()));
@@ -65,7 +79,11 @@ public class JobRunner implements AutoCloseable {
         String summary = null;
         String error = null;
         try {
-            work = executor.submit(() -> executors.get(job.jobType()).execute(context));
+            work = executor.submit(() -> {
+                try (var logContext = new com.example.jobscheduler.util.LogContext(nodeId, job.id(), runId)) {
+                    return executors.get(job.jobType()).execute(context);
+                }
+            });
             var activeWork = work;
             heartbeat = heartbeats.scheduleWithFixedDelay(() -> renew(job, runId, activeWork, lost),
                     properties.heartbeatInterval().toMillis(), properties.heartbeatInterval().toMillis(), TimeUnit.MILLISECONDS);
@@ -77,7 +95,7 @@ public class JobRunner implements AutoCloseable {
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
             // Shutdown leaves this attempt for the janitor; lease release enables immediate takeover.
-            return;
+            return "LOST";
         } catch (Exception ex) {
             var cause = ex instanceof ExecutionException ? ex.getCause() : ex;
             outcome = cause instanceof TimeoutException || cause instanceof HttpTimeoutException
@@ -93,8 +111,9 @@ public class JobRunner implements AutoCloseable {
             }
         }
         if (!lost.get() && !closed.get()) {
-            executions.finish(job, runId, nodeId, outcome, summary, error);
+            return executions.finish(job, runId, nodeId, outcome, summary, error) ? outcome.name() : "LOST";
         }
+        return "LOST";
     }
 
     /** Losing or being unable to verify ownership cancels execution; expiry enables recovery. */
@@ -102,7 +121,7 @@ public class JobRunner implements AutoCloseable {
         if (closed.get() || lost.get()) {
             return;
         }
-        try {
+        try (var context = new com.example.jobscheduler.util.LogContext(nodeId, job.id(), runId)) {
             if (!executions.heartbeat(job.id(), runId, nodeId, properties.leaseDuration())) {
                 lost.set(true);
                 work.cancel(true);
@@ -110,7 +129,9 @@ public class JobRunner implements AutoCloseable {
         } catch (Exception ex) {
             lost.set(true);
             work.cancel(true);
-            log.warn("Heartbeat failed for job {} on node {} ({})", job.id(), nodeId, ex.getClass().getSimpleName());
+            try (var context = new com.example.jobscheduler.util.LogContext(nodeId, job.id(), runId)) {
+                log.warn("Heartbeat failed ({})", ex.getClass().getSimpleName());
+            }
         }
     }
 

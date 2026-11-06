@@ -22,6 +22,7 @@ public class SchedulerLoop implements SmartLifecycle, AutoCloseable {
     private final SchedulerProperties properties;
     private final String nodeId;
     private final Janitor janitor;
+    private final com.example.jobscheduler.config.SchedulerMetrics metrics;
     private final PollingBackoff backoff;
     private long nextCleanup;
     private final java.util.concurrent.atomic.AtomicBoolean stopped = new java.util.concurrent.atomic.AtomicBoolean();
@@ -32,13 +33,14 @@ public class SchedulerLoop implements SmartLifecycle, AutoCloseable {
     private volatile boolean running;
 
     public SchedulerLoop(JobClaimRepository claims, JobExecutionRepository executions, JobRunner runner,
-                         SchedulerProperties properties, String nodeId, Janitor janitor) {
+                         SchedulerProperties properties, String nodeId, Janitor janitor, com.example.jobscheduler.config.SchedulerMetrics metrics) {
         this.claims = claims;
         this.executions = executions;
         this.runner = runner;
         this.properties = properties;
         this.nodeId = nodeId;
         this.janitor = janitor;
+        this.metrics = metrics;
         backoff = new PollingBackoff(properties.pollInterval());
         slots = new Semaphore(properties.maxConcurrentRuns());
     }
@@ -61,8 +63,15 @@ public class SchedulerLoop implements SmartLifecycle, AutoCloseable {
     }
 
     private void poll() {
+        try (var context = new com.example.jobscheduler.util.LogContext(nodeId, null, null)) {
+            pollWithContext();
+        }
+    }
+
+    private void pollWithContext() {
         long delay;
         try {
+            metrics.refreshBacklog();
             long now = System.nanoTime(); // Local elapsed cadence only; lease decisions use PostgreSQL now().
             if (nextCleanup == 0 || now - nextCleanup >= 0) {
                 janitor.markLost();
@@ -92,12 +101,22 @@ public class SchedulerLoop implements SmartLifecycle, AutoCloseable {
         }
         int submitted = 0;
         try {
-            for (var job : claims.claim(nodeId, properties.leaseDuration(), reserved)) {
+            java.util.List<ClaimedJob> claimed;
+            var sample = metrics.startClaim();
+            try {
+                claimed = claims.claim(nodeId, properties.leaseDuration(), reserved);
+            } finally {
+                metrics.stopClaim(sample);
+            }
+            metrics.claimed(claimed.size());
+            for (var job : claimed) {
                 workers.submit(() -> {
-                    try {
+                    try (var context = new com.example.jobscheduler.util.LogContext(nodeId, job.id(), null)) {
                         runner.run(job);
                     } catch (Exception ex) {
-                        log.warn("Run persistence failed for job {} on node {} ({})", job.id(), nodeId, ex.getClass().getSimpleName());
+                        try (var context = new com.example.jobscheduler.util.LogContext(nodeId, job.id(), null)) {
+                            log.warn("Run persistence failed ({})", ex.getClass().getSimpleName());
+                        }
                     } finally {
                         slots.release();
                     }
@@ -120,6 +139,12 @@ public class SchedulerLoop implements SmartLifecycle, AutoCloseable {
 
     @Override
     public void stop() {
+        try (var context = new com.example.jobscheduler.util.LogContext(nodeId, null, null)) {
+            stopWithContext();
+        }
+    }
+
+    private void stopWithContext() {
         if (!stopped.compareAndSet(false, true)) {
             return;
         }

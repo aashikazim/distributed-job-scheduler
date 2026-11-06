@@ -27,24 +27,34 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-@SpringBootTest(properties = "scheduler.enabled=false")
+@SpringBootTest(properties = {"scheduler.enabled=false", "scheduler.api-key=test-only-key",
+        "scheduler.http.allowed-hosts=example.com,127.0.0.1,localhost"})
 @AutoConfigureMockMvc
 @Import(JobApiTest.FixedTime.class)
 class JobApiTest extends PostgresIntegrationTest {
     private static final Instant NOW = Instant.parse("2026-01-01T00:00:00Z");
-    private final MockMvc mvc;
+    private MockMvc mvc;
+    private final org.springframework.web.context.WebApplicationContext context;
+    private final com.example.jobscheduler.config.ApiAccessFilter filter;
     private final ObjectMapper json;
     private final JdbcTemplate jdbc;
 
     @Autowired
-    JobApiTest(MockMvc mvc, ObjectMapper json, JdbcTemplate jdbc) {
+    JobApiTest(MockMvc mvc, ObjectMapper json, JdbcTemplate jdbc,
+               org.springframework.web.context.WebApplicationContext context,
+               com.example.jobscheduler.config.ApiAccessFilter filter) {
         this.mvc = mvc;
+        this.context = context;
+        this.filter = filter;
         this.json = json;
         this.jdbc = jdbc;
     }
 
     @BeforeEach
     void cleanDatabase() {
+        mvc = org.springframework.test.web.servlet.setup.MockMvcBuilders.webAppContextSetup(context)
+                .defaultRequest(get("/").header("X-API-Key", "test-only-key"))
+                .addFilters(filter).build();
         jdbc.execute("TRUNCATE jobs CASCADE");
     }
 

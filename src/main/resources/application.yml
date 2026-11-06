@@ -27,6 +27,8 @@ server:
   shutdown: graceful
 scheduler:
   role: ALL
+  http:
+    allowed-hosts: []
   poll-interval: 2s
   batch-size: 20
   max-concurrent-runs: 50
@@ -41,7 +43,16 @@ management:
     health:
       probes:
         enabled: true
+      group:
+        readiness:
+          include: readinessState,db
+        liveness:
+          include: livenessState
   endpoints:
     web:
       exposure:
         include: health,info,prometheus
+logging:
+  structured:
+    format:
+      console: logstash

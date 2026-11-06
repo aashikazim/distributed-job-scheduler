@@ -11,7 +11,8 @@ The Maven Wrapper downloads Maven on first use; no system Maven is needed.
 
 ```bash
 cp .env.example .env
-# Edit .env and set DB_PASSWORD to a local development password.
+# Edit .env: set DB_PASSWORD and a random SCHEDULER_API_KEY.
+# Generate a key with: python3 -c 'import secrets; print(secrets.token_hex(32))'
 set -a
 source .env
 set +a
@@ -53,18 +54,19 @@ After starting the application as above, run this in another Bash terminal.
 Python 3 is used only to read the returned job ID; you can also copy the ID manually.
 
 ```bash
+set -a; source .env; set +a
 BASE=http://localhost:8080/api/v1
-JOB_ID=$(curl -fsS -X POST "$BASE/jobs" \
+JOB_ID=$(curl -fsS -H "X-API-Key: $SCHEDULER_API_KEY" -X POST "$BASE/jobs" \
   -H 'Content-Type: application/json' \
   -d '{"name":"demo-webhook","jobType":"HTTP","scheduleType":"FIXED_RATE","fixedRateSeconds":60,"payload":{"url":"https://example.com/hook","method":"POST","body":"{}","expectedStatus":[200,202]}}' \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
 
-curl -fsS "$BASE/jobs?page=0&size=10&type=HTTP&name=demo"
-curl -fsS "$BASE/jobs/$JOB_ID"
-curl -fsS -X POST "$BASE/jobs/$JOB_ID/pause"
-curl -fsS "$BASE/jobs?status=PAUSED"
-curl -fsS -X POST "$BASE/jobs/$JOB_ID/resume"
-curl -fsS -X POST "$BASE/jobs/$JOB_ID/trigger"
+curl -fsS -H "X-API-Key: $SCHEDULER_API_KEY" "$BASE/jobs?page=0&size=10&type=HTTP&name=demo"
+curl -fsS -H "X-API-Key: $SCHEDULER_API_KEY" "$BASE/jobs/$JOB_ID"
+curl -fsS -H "X-API-Key: $SCHEDULER_API_KEY" -X POST "$BASE/jobs/$JOB_ID/pause"
+curl -fsS -H "X-API-Key: $SCHEDULER_API_KEY" "$BASE/jobs?status=PAUSED"
+curl -fsS -H "X-API-Key: $SCHEDULER_API_KEY" -X POST "$BASE/jobs/$JOB_ID/resume"
+curl -fsS -H "X-API-Key: $SCHEDULER_API_KEY" -X POST "$BASE/jobs/$JOB_ID/trigger"
 ```
 
 POST returns 201 with a Location header. GET, PUT, and state actions return 200.
@@ -75,12 +77,12 @@ size is 1–100 (default 20). Filters combine; name is a case-insensitive litera
 PUT replaces the definition and requires the latest version. For example:
 
 ```bash
-VERSION=$(curl -fsS "$BASE/jobs/$JOB_ID" \
+VERSION=$(curl -fsS -H "X-API-Key: $SCHEDULER_API_KEY" "$BASE/jobs/$JOB_ID" \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')
-curl -fsS -X PUT "$BASE/jobs/$JOB_ID" \
+curl -fsS -H "X-API-Key: $SCHEDULER_API_KEY" -X PUT "$BASE/jobs/$JOB_ID" \
   -H 'Content-Type: application/json' \
   -d "{\"name\":\"demo-webhook\",\"jobType\":\"HTTP\",\"scheduleType\":\"FIXED_RATE\",\"fixedRateSeconds\":120,\"payload\":{\"url\":\"https://example.com/hook\",\"method\":\"POST\"},\"version\":$VERSION}"
-curl -fsS -X DELETE "$BASE/jobs/$JOB_ID"
+curl -fsS -H "X-API-Key: $SCHEDULER_API_KEY" -X DELETE "$BASE/jobs/$JOB_ID"
 ```
 
 The error body is RFC 7807 ProblemDetail: 400 for malformed/invalid fields,
@@ -102,8 +104,8 @@ Schedule rules:
 
 Payloads must be JSON objects of at most 64 KB, with valid HTTP(S) URLs, methods,
 headers, body strings, and expected status codes. Unknown job types return 422.
-The HTTP executor and registry are available. SSRF protection and API key auth arrive
-in Phase 5. The default engine polls every 2 seconds with ±20% jitter.
+The HTTP executor and registry are available. API key auth and SSRF validation are enabled.
+The default engine polls every 2 seconds with ±20% jitter.
 
 OpenAPI JSON: `/v3/api-docs`. Interactive API documentation: `/swagger-ui.html`.
 Run history is available at `/api/v1/jobs/{id}/runs?page=0&size=20` and `/api/v1/runs/{id}`.
@@ -117,15 +119,18 @@ mkdir -p /tmp/scheduler-webhook-demo
 python3 -m http.server 9090 --bind 127.0.0.1 --directory /tmp/scheduler-webhook-demo
 ```
 
+For this local target, set `SCHEDULER_HTTP_ALLOWED_HOSTS=127.0.0.1` in the application
+terminal before starting/restarting it. Private/local destinations are blocked by default.
 With the scheduler application running, create an immediately due one-time job:
 
 ```bash
+set -a; source .env; set +a
 BASE=http://localhost:8080/api/v1
-JOB_ID=$(curl -fsS "$BASE/jobs" -H 'Content-Type: application/json' \
+JOB_ID=$(curl -fsS -H "X-API-Key: $SCHEDULER_API_KEY" "$BASE/jobs" -H 'Content-Type: application/json' \
   -d '{"name":"engine-demo","jobType":"HTTP","scheduleType":"ONE_TIME","runAt":"2020-01-01T00:00:00Z","payload":{"url":"http://127.0.0.1:9090/","method":"GET","expectedStatus":[200]}}' \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
-curl -fsS "$BASE/jobs/$JOB_ID/runs"
-curl -fsS "$BASE/jobs/$JOB_ID"
+curl -fsS -H "X-API-Key: $SCHEDULER_API_KEY" "$BASE/jobs/$JOB_ID/runs"
+curl -fsS -H "X-API-Key: $SCHEDULER_API_KEY" "$BASE/jobs/$JOB_ID"
 ```
 
 Repeat the last two commands after a poll. The run becomes SUCCEEDED and the job
@@ -138,7 +143,7 @@ that job, and heartbeat renewals keep long runs reserved.
 A second application process may use the same exported database environment and
 `SERVER_PORT=8081 ./mvnw spring-boot:run`. Workers have unique HOSTNAME-plus-random IDs.
 Use `SCHEDULER_ENABLED=false` to disable polling when inspecting API behavior.
-Role-specific enabling is still scheduled for Phase 5.
+Set SCHEDULER_ROLE to ALL, API, or WORKER as described below.
 
 HTTP supports method, headers, body, expectedStatus, and per-job timeoutSeconds.
 Defaults are POST with no body and any 2xx response accepted. Redirects are not followed.
@@ -231,3 +236,68 @@ Run the reliability and concurrency scenarios with Java 21 and Docker available:
 The 500-job/two-worker test continues to pass. A separate packaged-application SIGKILL
 check also demonstrated recovery: two unique HTTP attempts, one LOST and one SUCCEEDED
 run, and the job COMPLETED. This demonstrates why delivery remains at-least-once.
+
+## Observability and security (Phase 5)
+
+API/ALL startup requires a nonempty SCHEDULER_API_KEY; there is no default key or bypass.
+Load `.env` in each client terminal and send `X-API-Key: $SCHEDULER_API_KEY`.
+The filter compares fixed-size SHA-256 digests with MessageDigest.isEqual, rejects
+missing/wrong/duplicate keys with 401, and rejects ambiguous path aliases before public-route
+exemptions. Credentials are never included in error responses or diagnostic DTO strings.
+Swagger UI and OpenAPI remain public in API/ALL; use the UI's Authorize button to call the API.
+Health/info/Prometheus endpoints remain unauthenticated for cluster-internal probing/scraping.
+
+| SCHEDULER_ROLE | REST routes | Job polling/execution |
+| --- | --- | --- |
+| ALL (default) | API, docs, actuator | Enabled |
+| API | API, docs, actuator | Disabled; a housekeeping task refreshes backlog gauges |
+| WORKER | Actuator only; API/docs return 404 | Enabled; no API key required |
+
+SSRF checks resolve all A/AAAA addresses at creation/update and again before execution.
+Loopback, link-local/cloud metadata, private IPv4, IPv6 unique-local, multicast/unspecified,
+and IPv4 transition addresses are rejected. A mixed public/private DNS answer is rejected.
+Redirects and system HTTP proxies are disabled. Explicit, case-insensitive exact hosts in
+scheduler.http.allowed-hosts override address restrictions for local development and tests;
+subdomains/wildcards do not match automatically. Default: empty allowlist, public targets only.
+The Java HTTP client performs its own connection resolution: this guard does not pin DNS
+answers to sockets. Use network egress restrictions where rebinding-resistant enforcement is needed.
+
+All executor types receive a 64 KB UTF-8 serialized payload limit. The API also limits raw
+POST/PUT bodies to 128 KB (413) and JSON nesting to 100 levels. HTTP payload validation remains
+in place. Structured Logstash JSON logs include jobId, runId, and nodeId on execution/heartbeat
+threads, including virtual threads; MDC scopes restore/clear context afterward. Headers,
+keys, URLs/payloads, and response bodies are omitted from diagnostic record representations.
+
+Readiness includes readinessState and the database health check. Flyway must finish before
+application startup completes. A DB outage returns 503 from `/actuator/health/readiness`,
+while `/actuator/health/liveness` stays 200; restart storms do not help a database outage.
+Readiness also fails while the application is refusing traffic during startup/shutdown.
+
+```bash
+curl -fsS http://localhost:8080/actuator/prometheus
+curl -fsS http://localhost:8080/actuator/health/readiness
+curl -fsS http://localhost:8080/actuator/health/liveness
+```
+
+| Micrometer name | Meaning |
+| --- | --- |
+| scheduler_jobs_due | Global ACTIVE jobs due at the last successful DB snapshot, including leased jobs |
+| scheduler_lag_seconds | Database-clock age of the oldest due job |
+| scheduler_claim_duration | Claim transaction timer, including failed claims |
+| scheduler_claimed_total | Successfully claimed job count on this process |
+| scheduler_running | Active local run coordinators |
+| scheduler_run_duration | Run timer tagged by registered executor type and outcome |
+| scheduler_runs_total | Local finished attempts tagged by type/outcome, including LOST attempts |
+| scheduler_dead_letter_total | Committed one-time dead-letter transitions on this process |
+
+Worker gauges refresh every poll, even when capacity is full. API pods refresh global backlog
+without claiming jobs. Scraping reads cached values and never queries PostgreSQL; during an
+outage the gauges retain their last successful snapshot. Do not sum the duplicated global
+backlog across pods; use max. Sum local running/counter series as appropriate.
+Timers export `_seconds_count`, `_seconds_sum`, and `_seconds_max` series.
+
+[Captured Prometheus output](docs/PROMETHEUS_SAMPLE.txt) comes from the packaged application
+with one successful HTTP run, one failed/dead-lettered run, and one in-flight HTTP run.
+The verification also stopped/restarted its isolated database: readiness changed 200 → 503 → 200,
+liveness stayed 200, and polling recovered. Tests cover authentication, roles, SSRF, health,
+payload bounds, metric updates, secret-safe diagnostics, and virtual-thread MDC propagation.

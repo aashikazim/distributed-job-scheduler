@@ -15,14 +15,20 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 @Configuration(proxyBeanMethods = false)
-@EnableConfigurationProperties(SchedulerProperties.class)
+@EnableConfigurationProperties({SchedulerProperties.class, AccessProperties.class, HttpProperties.class})
 public class EngineConfiguration {
+    @Bean
+    public String schedulerNodeId() {
+        return NodeId.create();
+    }
+
     @Bean(destroyMethod = "")
+    @org.springframework.context.annotation.Conditional(RoleConditions.Worker.class)
     @ConditionalOnProperty(name = "scheduler.enabled", havingValue = "true", matchIfMissing = true)
     public SchedulerLoop schedulerLoop(JobClaimRepository claims, JobExecutionRepository executions,
-                                       ExecutorRegistry executors, SchedulerProperties properties, Clock clock, Janitor janitor) {
-        var node = NodeId.create();
-        var runner = new JobRunner(executions, executors, properties, clock, node);
-        return new SchedulerLoop(claims, executions, runner, properties, node, janitor);
+                                       ExecutorRegistry executors, SchedulerProperties properties, Clock clock, Janitor janitor,
+                                       @org.springframework.beans.factory.annotation.Qualifier("schedulerNodeId") String node, SchedulerMetrics metrics) {
+        var runner = new JobRunner(executions, executors, properties, clock, node, metrics);
+        return new SchedulerLoop(claims, executions, runner, properties, node, janitor, metrics);
     }
 }

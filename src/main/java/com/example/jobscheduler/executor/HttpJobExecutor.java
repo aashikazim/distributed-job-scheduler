@@ -25,12 +25,18 @@ import org.springframework.stereotype.Component;
 public class HttpJobExecutor implements JobExecutor, DisposableBean {
     private final HttpPayloadValidator validator;
     private final Clock clock;
+    private final SsrfGuard guard;
     private final HttpClient client = HttpClient.newBuilder()
+            .proxy(new java.net.ProxySelector() {
+                @Override public List<java.net.Proxy> select(URI uri) { return List.of(java.net.Proxy.NO_PROXY); }
+                @Override public void connectFailed(URI uri, java.net.SocketAddress address, java.io.IOException ex) { }
+            })
             .followRedirects(HttpClient.Redirect.NEVER).connectTimeout(Duration.ofSeconds(10)).build();
 
-    public HttpJobExecutor(HttpPayloadValidator validator, Clock clock) {
+    public HttpJobExecutor(HttpPayloadValidator validator, Clock clock, SsrfGuard guard) {
         this.validator = validator;
         this.clock = clock;
+        this.guard = guard;
     }
 
     @Override
@@ -41,10 +47,12 @@ public class HttpJobExecutor implements JobExecutor, DisposableBean {
     @Override
     public void validatePayload(JsonNode payload) {
         validator.validate(type(), payload);
+        guard.check(URI.create(payload.path("url").asText()));
     }
 
     @Override
     public ExecutionResult execute(ExecutionContext context) throws Exception {
+        guard.check(URI.create(context.payload().path("url").asText()));
         var remaining = Duration.between(clock.instant(), context.deadline());
         if (remaining.isNegative() || remaining.isZero()) {
             throw new TimeoutException("HTTP deadline exceeded");

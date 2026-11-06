@@ -34,14 +34,16 @@ public class JobService {
     private final ExecutorRegistry payloads;
     private final Clock clock;
     private final JdbcClient jdbc;
+    private final com.example.jobscheduler.config.PayloadSizeValidator payloadSize;
 
     public JobService(JobRepository jobs, ScheduleCalculator schedules, ExecutorRegistry payloads,
-                      Clock clock, JdbcClient jdbc) {
+                      Clock clock, JdbcClient jdbc, com.example.jobscheduler.config.PayloadSizeValidator payloadSize) {
         this.jobs = jobs;
         this.schedules = schedules;
         this.payloads = payloads;
         this.clock = clock;
         this.jdbc = jdbc;
+        this.payloadSize = payloadSize;
     }
 
     public JobResponse create(JobRequest request) {
@@ -156,6 +158,7 @@ public class JobService {
     }
 
     private void validate(JobRequest request) {
+        payloadSize.validate(request.payload());
         schedules.validate(request);
         payloads.get(request.jobType()).validatePayload(request.payload());
     }

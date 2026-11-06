@@ -126,10 +126,51 @@
   attempts, one LOST and one SUCCEEDED history row, job COMPLETED. This confirms at-least-once
   behavior; it does not imply exactly-once external effects. Verification resources were cleaned up.
 - Updated README failure-scenario table and HOW_IT_WORKS learning notes.
-- Next: Phase 5 observability/security. Stopped before Phase 5.
+- Phase 5 observability/security is complete below.
+
+## Phase 5 — Observability and security
+
+- Added all section 10 metrics: cached due/lag gauges using one PostgreSQL-clock snapshot,
+  claim duration/count, local running gauge, run duration/count tagged by bounded executor
+  type/outcome, and the existing after-commit dead-letter counter. Workers refresh backlog
+  every poll; API pods refresh it with a housekeeping task, without claiming jobs.
+  Prometheus scrapes never query the DB; cached gauges retain their last successful values.
+- Added structured Logstash JSON and scoped jobId/runId/nodeId MDC propagation into virtual
+  execution threads, polling, and heartbeats. Request/response/execution diagnostics redact
+  payloads and result bodies; checked that temporary credentials were absent from app logs.
+- Readiness includes traffic state and DB health; liveness includes only process state.
+  Flyway must finish before startup completes. Tests cover DB-down and refusing-traffic states.
+- Added mandatory API key configuration for API/ALL, fixed-size digest/constant-time comparison,
+  401 ProblemDetail responses for missing/wrong/duplicate keys, bounded request reads, and
+  rejection of ambiguous path aliases before public actuator/docs exemptions.
+  Health/info/Prometheus remain open. Swagger describes X-API-Key authorization.
+- Added property-based ALL/API/WORKER conditions: API has no engine; WORKER has no job/history
+  controllers and returns 404 for all non-actuator routes, including docs. WORKER needs no API key.
+- Added SSRF checks on all resolved A/AAAA addresses at validation and execution. Denies private,
+  loopback, link-local/metadata, IPv6 local/transition, multicast, and unspecified destinations;
+  rejects mixed public/private answers and DNS failures. Exact-host overrides support local tests.
+  HTTP redirects and system proxies are disabled. Java HttpClient does its own connection lookup,
+  so socket-level DNS pinning is outside this guard; rebinding-resistant deployments need egress controls.
+- Added global 64 KB serialized payload validation, 128 KB raw POST/PUT request bounds, and
+  JSON nesting depth 100. No additional dependencies or schema changes were needed.
+- Final `./mvnw verify` passed on Java 21: 111 tests, 0 failures/errors/skips. This includes
+  authentication/path aliases, API/WORKER roles, default SSRF block versus explicit allowance,
+  IPv4/IPv6/DNS cases, payload bounds, health split, metrics, diagnostic redaction, virtual-thread
+  MDC propagation/cleanup, and all prior 500-job concurrency/recovery/retry/shutdown tests.
+- Packaged ALL-role app verification passed against isolated Compose PostgreSQL 16:
+  missing key 401, valid key 200, metadata target 422. Captured real Prometheus output with
+  three claims, one successful HTTP attempt, one failed/dead-lettered attempt, one active run,
+  one due job, and ~15.45 seconds of lag. Saved docs/PROMETHEUS_SAMPLE.txt.
+- Stopped only the isolated database: readiness 503, liveness 200. After restart readiness
+  returned 200 and the polling loop recovered/completed the remaining job. Verification
+  app/target/database resources were cleaned up; existing services were untouched.
+- Generated a random key only in the ignored local .env because its API key was empty;
+  did not print it or change an existing configured key. Updated README curl examples to
+  load the environment/send the header and require explicit local-host allowance for the demo.
+- Next: Phase 6 Docker image, full Compose API/workers, and smoke script. Stopped before Phase 6.
 
 ## Deferred
 
-- Phase 5, as planned: SSRF guard, API key auth, remaining scheduler metrics/MDC, role-specific
-  enabling, and readiness/liveness split. Polling can currently be disabled via scheduler.enabled.
-- No dependency additions, schema changes, or edits to applied migrations in Phase 4.
+- None for the specified Phase 5 checks. DNS/socket pinning is not provided by Java HttpClient;
+  the application's DNS checks complement deployment-level egress restrictions.
+- Container hardening and the full Compose topology remain in Phase 6, as planned.

@@ -28,7 +28,7 @@ class PollingResilienceTest {
         var properties = new SchedulerProperties(Duration.ofMillis(20), 1, 1,
                 Duration.ofSeconds(10), Duration.ofSeconds(2), Duration.ofSeconds(1),
                 Duration.ofSeconds(30), 30, Duration.ofSeconds(60));
-        try (var loop = new SchedulerLoop(claims, executions, runner, properties, "outage", janitor)) {
+        try (var loop = new SchedulerLoop(claims, executions, runner, properties, "outage", janitor, mock(com.example.jobscheduler.config.SchedulerMetrics.class))) {
             loop.start();
             await().atMost(Duration.ofSeconds(3)).untilAsserted(() ->
                     verify(claims, atLeast(4)).claim(eq("outage"), any(), eq(1)));
@@ -47,7 +47,7 @@ class PollingResilienceTest {
                 Duration.ofSeconds(10), Duration.ofSeconds(2), Duration.ZERO,
                 Duration.ofSeconds(30), 30, Duration.ofSeconds(60));
         var loop = new SchedulerLoop(mock(JobClaimRepository.class), executions, mock(JobRunner.class), properties,
-                "offline", mock(Janitor.class));
+                "offline", mock(Janitor.class), mock(com.example.jobscheduler.config.SchedulerMetrics.class));
         org.assertj.core.api.Assertions.assertThatCode(() -> {
             loop.stop();
             loop.stop();

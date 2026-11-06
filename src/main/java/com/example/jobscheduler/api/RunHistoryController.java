@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
+@org.springframework.context.annotation.Conditional(com.example.jobscheduler.config.RoleConditions.Api.class)
 @RequestMapping("/api/v1")
 @Validated
 public class RunHistoryController {

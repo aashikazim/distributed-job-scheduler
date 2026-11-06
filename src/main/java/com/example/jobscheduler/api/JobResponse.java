@@ -18,6 +18,11 @@ public record JobResponse(
         int backoffMaxSecs, int timeoutSeconds, MisfirePolicy misfirePolicy,
         Long version, Instant createdAt, Instant updatedAt) {
 
+    @Override
+    public String toString() {
+        return "JobResponse[id=" + id + ", status=" + status + ", definition=<redacted>]";
+    }
+
     public static JobResponse from(Job job) {
         return new JobResponse(job.getId(), job.getName(), job.getDescription(), job.getJobType(),
                 job.getPayload(), job.getScheduleType(), job.getCronExpression(), job.getFixedRateSeconds(),

@@ -9,6 +9,11 @@ import com.example.jobscheduler.domain.RunStatus;
 public record JobRunResponse(UUID id, UUID jobId, int attempt, RunStatus status, Instant scheduledFor,
                              Instant startedAt, Instant finishedAt, String nodeId,
                              String resultSummary, String errorMessage) {
+    @Override
+    public String toString() {
+        return "JobRunResponse[id=" + id + ", jobId=" + jobId + ", status=" + status + ", result=<redacted>]";
+    }
+
     public static JobRunResponse from(JobRun run) {
         return new JobRunResponse(run.getId(), run.getJobId(), run.getAttempt(), run.getStatus(),
                 run.getScheduledFor(), run.getStartedAt(), run.getFinishedAt(), run.getNodeId(),

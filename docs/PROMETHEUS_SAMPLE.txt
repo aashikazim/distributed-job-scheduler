@@ -1,0 +1,34 @@
+# TYPE scheduler_claim_duration_seconds summary
+scheduler_claim_duration_seconds_count 7
+scheduler_claim_duration_seconds_sum 0.023164282
+# TYPE scheduler_claim_duration_seconds_max gauge
+scheduler_claim_duration_seconds_max 0.005579003
+# TYPE scheduler_claimed_total counter
+scheduler_claimed_total 3.0
+# TYPE scheduler_dead_letter_total counter
+scheduler_dead_letter_total 1.0
+# TYPE scheduler_jobs_due gauge
+scheduler_jobs_due 1.0
+# TYPE scheduler_lag_seconds gauge
+scheduler_lag_seconds 15.445357
+# TYPE scheduler_run_duration_seconds summary
+scheduler_run_duration_seconds_count{outcome="FAILED",type="HTTP"} 1
+scheduler_run_duration_seconds_sum{outcome="FAILED",type="HTTP"} 0.00941251
+scheduler_run_duration_seconds_count{outcome="LOST",type="HTTP"} 0
+scheduler_run_duration_seconds_sum{outcome="LOST",type="HTTP"} 0.0
+scheduler_run_duration_seconds_count{outcome="SUCCEEDED",type="HTTP"} 1
+scheduler_run_duration_seconds_sum{outcome="SUCCEEDED",type="HTTP"} 0.03071968
+scheduler_run_duration_seconds_count{outcome="TIMED_OUT",type="HTTP"} 0
+scheduler_run_duration_seconds_sum{outcome="TIMED_OUT",type="HTTP"} 0.0
+# TYPE scheduler_run_duration_seconds_max gauge
+scheduler_run_duration_seconds_max{outcome="FAILED",type="HTTP"} 0.00941251
+scheduler_run_duration_seconds_max{outcome="LOST",type="HTTP"} 0.0
+scheduler_run_duration_seconds_max{outcome="SUCCEEDED",type="HTTP"} 0.03071968
+scheduler_run_duration_seconds_max{outcome="TIMED_OUT",type="HTTP"} 0.0
+# TYPE scheduler_running gauge
+scheduler_running 1.0
+# TYPE scheduler_runs_total counter
+scheduler_runs_total{outcome="FAILED",type="HTTP"} 1.0
+scheduler_runs_total{outcome="LOST",type="HTTP"} 0.0
+scheduler_runs_total{outcome="SUCCEEDED",type="HTTP"} 1.0
+scheduler_runs_total{outcome="TIMED_OUT",type="HTTP"} 0.0
