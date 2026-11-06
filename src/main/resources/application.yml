@@ -1,0 +1,35 @@
+spring:
+  application:
+    name: job-scheduler
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/scheduler}
+    username: ${DB_USER:scheduler}
+    password: ${DB_PASSWORD}
+    hikari:
+      maximum-pool-size: 10
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate.jdbc.time_zone: UTC
+server:
+  shutdown: graceful
+scheduler:
+  role: ALL
+  poll-interval: 2s
+  batch-size: 20
+  max-concurrent-runs: 50
+  lease-duration: 60s
+  heartbeat-interval: 20s
+  shutdown-grace-period: 60s
+  run-retention-days: 30
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
