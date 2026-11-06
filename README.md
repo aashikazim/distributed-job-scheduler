@@ -31,4 +31,12 @@ with `docker compose down` (the named volume preserves data).
 Spring Boot does not load `.env` automatically; export it as shown above.
 Never commit `.env` or real credentials.
 
+## Persistence
+
+Flyway creates `jobs` and `job_runs` on startup. Hibernate validates those mappings.
+Repository tests use an isolated PostgreSQL 16 Testcontainer; `./mvnw verify` requires
+Docker access and fails if Docker is unavailable. No external database or `.env` is
+needed for those tests: Testcontainers supplies temporary database credentials.
+
+See [learning notes](docs/HOW_IT_WORKS.md) for schema ownership, JSONB, and version locking.
 The REST API and job engine are delivered in later phases.
