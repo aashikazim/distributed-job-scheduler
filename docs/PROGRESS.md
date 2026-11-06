@@ -211,12 +211,28 @@
 - Final API/worker/receiver/Postgres pods Ready; PostgreSQL 1Gi PVC Bound; worker PDB present;
   worker UID 10001. Cluster retained for review; port-forwards stopped. Its temporary credentials
   remain in a mode-600 file and are not committed. Existing Docker services were untouched.
-- Next: Phase 8 CI/CD and final docs. Phase 7 committed before starting Phase 8.
+- Phase 7 committed as e76759b before starting Phase 8.
+
+## Phase 8 — CI/CD and final documentation (remote CI check pending)
+
+- Added SHA-pinned GitHub Actions: Java 21/Testcontainers verify, script checks, checksum-verified
+  kubectl and all Kustomize rendering, test-report artifacts, then Docker build/100-job crash smoke.
+  Successful main pushes additionally publish full-SHA amd64/arm64 images to GHCR.
+- Builder uses BUILDPLATFORM so Java compilation runs natively for multi-platform runtime images.
+- Reworked README into a complete quickstart/API/architecture/reliability/security/scaling guide;
+  added managed-Postgres deployment instructions for EKS/RDS, GKE/Cloud SQL, and AKS/Azure PostgreSQL,
+  including private routing, verified TLS/CA mounts, credential creation, and image authorization.
+- Finished HOW_IT_WORKS, including the actual class/SQL path for one job and operational tradeoffs.
+- Added create-env.sh, which generates mode-600 local credentials and refuses to overwrite an
+  existing file. Verified fresh setup and preservation of existing credentials in a temporary copy.
+- Local `./mvnw verify`: 111 tests passed, zero failures/errors/skips. README/cloud Bash examples,
+  helper script syntax, and all Kustomize rendering passed. Running K8s worker pool limit confirmed
+  through Prometheus at 5 connections. Remote CI is the remaining Phase 8 check.
 
 ## Deferred
 
-- CPU HPA schema is validated in base/prod; actual CPU autoscaling requires metrics-server and
-  was not load-tested in the local overlay, which intentionally disables HPA for manual scaling.
-- Cloud deployments remain documentation/managed-account work in Phase 8; no paid cloud resources created.
+- Remote CI verification is pending; main-only GHCR publication requires a successful main push.
+- Cloud guides were researched against provider documentation but not run in paid cloud accounts.
+- CPU HPA was schema-validated but not exercised with metrics-server/load; local manual scaling passed.
 - DNS/socket pinning is not provided by Java HttpClient; application DNS checks complement egress controls.
-- Hard crashes may repeat attempts; graceful scale/delete tests do not change at-least-once semantics.
+- Hard crashes may repeat attempts, as required by at-least-once delivery; target idempotency is separate.

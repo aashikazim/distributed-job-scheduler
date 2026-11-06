@@ -124,3 +124,31 @@ A 90-second termination budget lets Java stop polling and finish work before Kub
 The PDB protects evictions and the production HPA controls worker count; local manual scaling omits HPA.
 The exercise scaled 1 → 5 → 1 and deleted an active owner, producing 100 successful runs and 100 HTTP attempts.
 The key concept: adding pods changes capacity, while leases and graceful termination protect the shared work.
+
+## Phase 8 — Reproducible delivery and operations
+
+CI checks Java 21/Testcontainers tests, manifest rendering, and the same Docker crash smoke used locally.
+Pinned action commits make workflow dependencies reviewable; publication runs only after checks pass on main.
+The image carries a source SHA, and the multi-platform build compiles Java on its native builder architecture.
+Kustomize separates portable app resources from local PostgreSQL and managed-cloud database settings.
+Cloud deployment keeps the same engine and changes only networking, verified TLS, credentials, and image access.
+A release can let Flyway serialize startup migrations, or explicitly order a separate migration Job before rollout.
+Operators scale workers by backlog/latency while reserving DB connection and graceful-termination headroom.
+The Definition of Done records evidence and limits, including real crash retries and untested provider-specific deployment.
+The key concept: reproducible packaging and honest operational evidence make the system understandable to the next developer.
+
+## Follow one job through the actual classes
+
+1. JobController accepts JobRequest, ApiAccessFilter authenticates it, and JobService validates the
+   executor/payload/schedule before JPA stores it. ScheduleCalculator computes the initial Instant.
+2. SchedulerLoop reserves semaphore slots. JobClaimRepository executes UPDATE with SKIP LOCKED;
+   worker B passes rows worker A is claiming and receives other jobs. The transaction commits.
+3. JobRunner starts history through JobExecutionRepository and passes ExecutionContext to the
+   registered HttpJobExecutor. The HTTP call runs outside the transaction, with MDC and run headers.
+4. Heartbeats take short DB transactions to renew only the active run's unexpired ownership.
+   Timeouts/lost ownership interrupt the executor; stale claims/run IDs cannot update a replacement.
+5. JobExecutionRepository finishes run/job in one guarded transaction: complete a one-time job,
+   advance a recurring slot, or schedule a retry/dead letter. Janitor cleans abandoned/old history.
+6. If A dies between the HTTP effect and completion, B takes over after expiry. The old run is
+   LOST and a new run ID identifies the repeated attempt. Only the target's business idempotency
+   can prevent repeating its external effect.

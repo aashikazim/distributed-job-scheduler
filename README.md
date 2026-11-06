@@ -1,277 +1,251 @@
 # Distributed Job Scheduler
 
-A learning project using Java 21, Spring Boot 3, and PostgreSQL 16.
-PostgreSQL will coordinate independent workers using short transactions and leases.
-See [AGENTS.md](AGENTS.md) for the design and [progress](docs/PROGRESS.md) for delivery status.
+A Java 21 / Spring Boot 3 scheduler whose stateless workers coordinate through PostgreSQL 16.
+It supports cron, one-time, and fixed-rate jobs through a REST API and a pluggable HTTP executor.
+No leader election, Redis, broker, Quartz, or application UI is required.
 
-## Local setup
+```mermaid
+flowchart LR
+    C[Clients / Swagger] --> A[API pods]
+    A --> P[(PostgreSQL 16<br/>jobs + job_runs)]
+    W1[Worker pod 1] --> P
+    W2[Worker pod N] --> P
+    W1 --> H[HTTP targets]
+    W2 --> H
+```
 
-Requires JDK 21, Docker with Compose, and permission to access the Docker daemon.
-The Maven Wrapper downloads Maven on first use; no system Maven is needed.
+All pods use one image. SCHEDULER_ROLE selects ALL, API, or WORKER. API/worker deployments
+scale separately. The implementation, failure tests, and local deployments are complete;
+[verification evidence and limits](docs/VERIFICATION.md) distinguish tested behavior from
+cloud/publishing work requiring your environment.
+
+## Quickstart with Docker
+
+Requires Docker Engine with Compose v2, Git, and Python 3 for credential/smoke helpers.
+A host JDK/Maven installation is unnecessary for the Docker build. From this repository root:
 
 ```bash
-cp .env.example .env
-# Edit .env: set DB_PASSWORD and a random SCHEDULER_API_KEY.
-# Generate a key with: python3 -c 'import secrets; print(secrets.token_hex(32))'
-set -a
-source .env
-set +a
-docker compose up -d --wait postgres
+# Creates random credentials in an ignored mode-600 .env; preserves any existing .env.
+test -f .env || ./scripts/create-env.sh
+set -a; source .env; set +a
+export IMAGE_TAG="$(git rev-parse --short HEAD)"
+docker compose up -d --build --wait --scale app-worker=3
+curl -fsS "http://localhost:${API_PORT:-8080}/actuator/health/readiness"
+```
+
+The default topology is one API, two workers, and PostgreSQL; the command above chooses three
+workers. API_PORT defaults to 8080. If 5432 is occupied, set DB_PORT=15432 and update DB_URL to
+`jdbc:postgresql://localhost:15432/scheduler` in .env before loading it again. Container-to-DB
+connections always use postgres:5432; DB_URL in .env is for a host-run application.
+If a local Maven application already uses 8080, stop it or choose another API_PORT.
+
+```bash
+docker compose logs -f app-worker
+docker compose up -d --scale app-worker=5
+docker compose down
+```
+
+`down` preserves PostgreSQL data. Use `down --volumes` only to deliberately discard that stack's
+local database. Keep .env out of Git and backups intended for sharing. Spring Boot does not load
+.env automatically; export it in every client/host-application terminal that needs its values.
+
+## Try the API and a successful HTTP job
+
+Opt into the test-only HTTP receiver and explicitly allow its private Docker hostname:
+
+```bash
+set -a; source .env; set +a
+export IMAGE_TAG="$(git rev-parse --short HEAD)"
+export SCHEDULER_HTTP_ALLOWED_HOSTS=smoke-target
+docker compose --profile smoke up -d --build --wait --scale app-worker=3
+BASE="http://localhost:${API_PORT:-8080}/api/v1"
+JOB_ID=$(curl -fsS -X POST "$BASE/jobs" -H "X-API-Key: $SCHEDULER_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"demo-webhook","jobType":"HTTP","scheduleType":"FIXED_RATE","fixedRateSeconds":3600,"payload":{"url":"http://smoke-target:8080/ok","method":"POST","body":"{}","expectedStatus":[200]}}' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+curl -fsS "$BASE/jobs?page=0&size=10&type=HTTP&name=demo" -H "X-API-Key: $SCHEDULER_API_KEY"
+curl -fsS -X POST "$BASE/jobs/$JOB_ID/pause" -H "X-API-Key: $SCHEDULER_API_KEY"
+curl -fsS -X POST "$BASE/jobs/$JOB_ID/resume" -H "X-API-Key: $SCHEDULER_API_KEY"
+curl -fsS -X POST "$BASE/jobs/$JOB_ID/trigger" -H "X-API-Key: $SCHEDULER_API_KEY"
+curl -fsS "$BASE/jobs/$JOB_ID/runs" -H "X-API-Key: $SCHEDULER_API_KEY"
+```
+
+Trigger marks the job due; it never executes in the API request thread. Repeat the history
+request after a poll to see SUCCEEDED. Use a new name if repeating the create command.
+The optional receiver is test tooling, not a production executor or durable idempotency store.
+Swagger is at `/swagger-ui.html`; use Authorize with X-API-Key. OpenAPI is `/v3/api-docs`.
+
+| Method | Path under /api/v1 | Behavior |
+| --- | --- | --- |
+| POST | /jobs | Create definition; 201 and Location |
+| GET | /jobs | List/filter/paginate |
+| GET | /jobs/{id} | Read definition |
+| PUT | /jobs/{id} | Replace definition using current version |
+| DELETE | /jobs/{id} | Delete definition/history; 204 |
+| POST | /jobs/{id}/pause | Pause; repeated pause is a 200 no-op |
+| POST | /jobs/{id}/resume | Activate, reset retries, recompute due time |
+| POST | /jobs/{id}/trigger | Activate/reset retries, mark due using PostgreSQL now() |
+| GET | /jobs/{id}/runs | Paginated newest-first history |
+| GET | /runs/{id} | One execution record |
+
+Lists return content, page, size, totalElements, totalPages. Page starts at 0; size is 1–100,
+default 20. Combine status/type/name filters; name is a case-insensitive literal substring.
+PUT takes the full definition plus its current version. After any active run has finished:
+
+```bash
+VERSION=$(curl -fsS "$BASE/jobs/$JOB_ID" -H "X-API-Key: $SCHEDULER_API_KEY" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')
+curl -fsS -X PUT "$BASE/jobs/$JOB_ID" -H "X-API-Key: $SCHEDULER_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d "{\"name\":\"demo-webhook\",\"jobType\":\"HTTP\",\"scheduleType\":\"FIXED_RATE\",\"fixedRateSeconds\":7200,\"payload\":{\"url\":\"http://smoke-target:8080/ok\",\"method\":\"POST\"},\"version\":$VERSION}"
+curl -fsS -X DELETE "$BASE/jobs/$JOB_ID" -H "X-API-Key: $SCHEDULER_API_KEY"
+```
+
+All responses are records, never entities. Errors use ProblemDetail: 400 for malformed/invalid
+fields, 401 for authentication, 404 for missing IDs, 409 for stale versions/duplicate names/live
+lease conflicts, 413 for oversized requests, and 422 for invalid schedules/executor configuration.
+Validation errors include a fields object. PUT/DELETE/resume/trigger return 409 during a live lease;
+pause remains available and survives completion of the in-flight run.
+
+## Scheduling and reliability
+
+CRON uses six fields: sec min hour day-of-month month day-of-week, with an IANA timezone,
+default UTC. Spring handles DST gaps and repeated local times. ONE_TIME uses runAt, including
+past timestamps; FIXED_RATE first becomes due one interval after creation. Supply only fields
+for that schedule type. A schedule edit recomputes nextRunAt; other edits preserve it and status.
+
+Workers reserve concurrency capacity, then atomically claim due rows with UPDATE / FOR UPDATE
+SKIP LOCKED / RETURNING in a short transaction. The saved owner/expiry lease lasts beyond commit;
+HTTP execution holds no row lock or database connection. Heartbeats renew active ownership.
+Completion checks owner, lease validity, and active run before atomically updating job/history.
+Version checks also prevent stale API writes from restoring older worker/heartbeat state.
+See [the class-by-class explanation and sequence diagram](docs/HOW_IT_WORKS.md).
+
+A recurring job computes its next slot from completion time: long runs do not build an overlap
+backlog. maxRetries counts extra attempts, so 2 allows up to 3 attempts. Backoff is
+min(initial × multiplier^retry_count, max), then ±10% jitter. Success resets retries. Exhausted
+one-time jobs become DEAD_LETTER; recurring jobs reset retries and advance to their next slot.
+Timeouts record TIMED_OUT and interrupt cooperative executors. The janitor marks abandoned runs
+LOST and purges old terminal history in batches of 1,000.
+
+A job more than misfire-threshold (default 60s) late is a misfire. FIRE_ONCE_NOW runs once and
+advances from completion time. SKIP advances recurring jobs without execution and completes
+stale one-time jobs without a run record; explicit retries are still eligible. Shutdown stops
+claims, waits for active work, then interrupts unfinished work and releases leases. Database
+errors are caught with capped polling backoff; if shutdown cannot reach PostgreSQL, leases expire.
+
+**Delivery is at-least-once.** A crash after an HTTP effect but before recording success can
+repeat that effect. X-Job-Id, X-Job-Run-Id, X-Job-Attempt identify job/attempt; recovered attempts
+get new run IDs. Targets needing effect-once behavior must use a stable business operation key
+and durable idempotency. The Docker crash smoke deliberately demonstrates this distinction.
+
+## Local Java development and tests
+
+Requires Java 21, unzip (the wrapper verifies a ZIP checksum), curl/wget, and Docker access.
+Check `./mvnw -v` and confirm Java 21; the POM's java.version does not switch Maven's JVM.
+
+```bash
 ./mvnw verify
+./mvnw -Dtest=EngineIntegrationTest,PollingResilienceTest verify
+set -a; source .env; set +a
+docker compose up -d --wait postgres
 ./mvnw spring-boot:run
 ```
 
-From another terminal:
+Stop the Compose API before starting a host API on its port. On Linux, activate new Docker group
+membership with a fresh login or `sg docker -c './mvnw verify'`. Tests use isolated PostgreSQL
+Testcontainers and fixed test-only API keys; no .env is needed for them. Async assertions use
+Awaitility. Integration tests cover two workers/500 jobs, real lease-expiry takeover, growing
+retry delays/dead-letter, timeout interruption, heartbeat loss, and both shutdown outcomes.
 
 ```bash
-curl -fsS http://localhost:8080/actuator/health
+./scripts/smoke.sh
+./scripts/k8s-smoke.sh
 ```
 
-Expected health status: `UP`. Stop the application with Ctrl-C, and stop PostgreSQL
-with `docker compose down` (the named volume preserves data).
-Spring Boot does not load `.env` automatically; export it as shown above.
-Never commit `.env` or real credentials.
+Docker smoke uses an isolated three-worker project, creates 100 jobs, kills an active owner,
+and asserts 100 completed jobs/100 successful runs. Observed: 1 LOST run and 101 HTTP attempts,
+with 100 deduplicated receiver effects; the other 99 jobs had one HTTP attempt. It removes only
+its stack/volume on exit. Override SMOKE_API_PORT/SMOKE_DB_PORT/SMOKE_TARGET_PORT if defaults
+18090/15437/19091 are occupied. KEEP_STACK=1 retains the test project and private credential file.
 
-## Persistence
+## Kubernetes
 
-Flyway creates `jobs` and `job_runs` on startup. Hibernate validates those mappings.
-Repository tests use an isolated PostgreSQL 16 Testcontainer; `./mvnw verify` requires
-Docker access and fails if Docker is unavailable. No external database or `.env` is
-needed for those tests: Testcontainers supplies temporary database credentials.
-
-See [learning notes](docs/HOW_IT_WORKS.md) for schema ownership, JSONB, and version locking.
-If you were just added to the Docker group, restart your login session to activate it.
-For the current session, `sg docker -c './mvnw verify'` applies that membership to the build.
-The default Compose database port is 5432. If another project uses it, set
-`DB_PORT=15432` and `DB_URL=jdbc:postgresql://localhost:15432/scheduler` in `.env`,
-then export `.env` again and run `docker compose up -d --wait postgres`.
-A password-authentication error can mean the app reached the other project's database.
-Changing the port keeps the projects separate.
-
-## Try the API (Phase 2)
-
-After starting the application as above, run this in another Bash terminal.
-Python 3 is used only to read the returned job ID; you can also copy the ID manually.
+Requires Docker, kind, kubectl (with Kustomize), Python 3, and Git. Install kind/kubectl from
+their [official kind](https://kind.sigs.k8s.io/docs/user/quick-start/) and
+[kubectl](https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/) guides, checking checksums.
+The complete local exercise builds/loads SHA-tagged images and deploys PostgreSQL with a PVC:
 
 ```bash
-set -a; source .env; set +a
-BASE=http://localhost:8080/api/v1
-JOB_ID=$(curl -fsS -H "X-API-Key: $SCHEDULER_API_KEY" -X POST "$BASE/jobs" \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"demo-webhook","jobType":"HTTP","scheduleType":"FIXED_RATE","fixedRateSeconds":60,"payload":{"url":"https://example.com/hook","method":"POST","body":"{}","expectedStatus":[200,202]}}' \
-  | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
-
-curl -fsS -H "X-API-Key: $SCHEDULER_API_KEY" "$BASE/jobs?page=0&size=10&type=HTTP&name=demo"
-curl -fsS -H "X-API-Key: $SCHEDULER_API_KEY" "$BASE/jobs/$JOB_ID"
-curl -fsS -H "X-API-Key: $SCHEDULER_API_KEY" -X POST "$BASE/jobs/$JOB_ID/pause"
-curl -fsS -H "X-API-Key: $SCHEDULER_API_KEY" "$BASE/jobs?status=PAUSED"
-curl -fsS -H "X-API-Key: $SCHEDULER_API_KEY" -X POST "$BASE/jobs/$JOB_ID/resume"
-curl -fsS -H "X-API-Key: $SCHEDULER_API_KEY" -X POST "$BASE/jobs/$JOB_ID/trigger"
+KEEP_CLUSTER=1 ./scripts/k8s-smoke.sh
 ```
 
-POST returns 201 with a Location header. GET, PUT, and state actions return 200.
-DELETE returns 204. The response includes the job's version and nextRunAt.
-Lists return content, page, size, totalElements, and totalPages. Page starts at 0;
-size is 1–100 (default 20). Filters combine; name is a case-insensitive literal substring.
+It creates a fresh cluster/namespace/credentials, scales workers 1 → 5 → 1, and deletes a pod
+owning a live run. Observed: 100 COMPLETED jobs, 100 SUCCEEDED runs, 0 LOST runs, 100 HTTP
+attempts/effects. KEEP_CLUSTER=1 prints kubeconfig/credential paths (mode 600); otherwise it
+cleans up only its own cluster/namespace. It refuses to replace an existing scheduler namespace.
+Use the printed kubeconfig, then `kubectl -n scheduler port-forward svc/scheduler-api 8080:80`.
 
-PUT replaces the definition and requires the latest version. For example:
+Base has separate API/worker Deployments, Service, ConfigMap, secret template, probes, resource
+limits, non-root/read-only security contexts, 90s termination, PDB minAvailable=1, and CPU HPA
+min=2/max=10. Local adds PostgreSQL and removes HPA for manual scaling. Prod uses a managed DB
+and provider CA volume. Secret templates are excluded from apply; create real secrets first.
+Kustomize namespaces apply to the complete overlay, including its added PostgreSQL resources.
 
 ```bash
-VERSION=$(curl -fsS -H "X-API-Key: $SCHEDULER_API_KEY" "$BASE/jobs/$JOB_ID" \
-  | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')
-curl -fsS -H "X-API-Key: $SCHEDULER_API_KEY" -X PUT "$BASE/jobs/$JOB_ID" \
-  -H 'Content-Type: application/json' \
-  -d "{\"name\":\"demo-webhook\",\"jobType\":\"HTTP\",\"scheduleType\":\"FIXED_RATE\",\"fixedRateSeconds\":120,\"payload\":{\"url\":\"https://example.com/hook\",\"method\":\"POST\"},\"version\":$VERSION}"
-curl -fsS -H "X-API-Key: $SCHEDULER_API_KEY" -X DELETE "$BASE/jobs/$JOB_ID"
+./scripts/render-k8s.sh local "$(git rev-parse --short HEAD)"
+./scripts/render-k8s.sh prod "$(git rev-parse HEAD)"
+kubectl -n scheduler scale deploy/scheduler-worker --replicas=5
+kubectl -n scheduler scale deploy/scheduler-worker --replicas=1
 ```
 
-The error body is RFC 7807 ProblemDetail: 400 for malformed/invalid fields,
-404 for missing jobs, 409 for duplicate names or stale versions, and 422 for invalid
-schedule or executor configuration. Validation errors include a fields object.
+Apply rendered output only after loading/publishing that SHA-tagged image and creating secrets.
+The test receiver/SSRF exception exists only in the smoke overlay. PDB protects evictions;
+direct pod deletion bypasses PDB but normal deletion still honors grace. Forced crashes can
+repeat attempts. CPU HPA requires metrics-server and was not load-tested locally.
 
-Schedule rules:
+For **EKS/RDS, GKE/Cloud SQL, or AKS/Azure PostgreSQL**, follow the
+[managed Postgres deployment guide](docs/CLOUD_DEPLOYMENT.md), including private networking,
+verified TLS, CA/Secret creation, image-pull authorization, and rollout commands. Cloud resources
+were not provisioned during verification. Flyway runs on startup and takes a DB lock, allowing
+concurrent pod migrations. A separate migration Job is an alternative for controlled release
+ordering; the current application does not provide a migrate-only command.
 
-- CRON requires six fields (sec min hour dom month dow) and an IANA timezone, default UTC.
-  Spring handles DST: missing local times are skipped, and repeated local times can have two slots.
-- FIXED_RATE first becomes due one interval after creation; later schedule calculations
-  use their supplied reference time, avoiding a catch-up backlog.
-- ONE_TIME uses runAt, including past timestamps for later worker misfire handling.
-- Supply only the schedule fields for the selected schedule type.
-- Editing a schedule recomputes nextRunAt; other edits preserve it. PUT preserves status.
-- Pause retains the due timestamp and repeated pause changes nothing. Resume activates the job,
-  resets retries, and recomputes nextRunAt. Trigger activates it, resets retries, and sets
-  nextRunAt using PostgreSQL now(), including for paused or terminal jobs.
+## Configuration, security, and metrics
 
-Payloads must be JSON objects of at most 64 KB, with valid HTTP(S) URLs, methods,
-headers, body strings, and expected status codes. Unknown job types return 422.
-The HTTP executor and registry are available. API key auth and SSRF validation are enabled.
-The default engine polls every 2 seconds with ±20% jitter.
+All YAML settings can be overridden through environment variables.
 
-OpenAPI JSON: `/v3/api-docs`. Interactive API documentation: `/swagger-ui.html`.
-Run history is available at `/api/v1/jobs/{id}/runs?page=0&size=20` and `/api/v1/runs/{id}`.
-
-## Try the engine (Phase 3)
-
-In a separate terminal, run an empty local HTTP target:
-
-```bash
-mkdir -p /tmp/scheduler-webhook-demo
-python3 -m http.server 9090 --bind 127.0.0.1 --directory /tmp/scheduler-webhook-demo
-```
-
-For this local target, set `SCHEDULER_HTTP_ALLOWED_HOSTS=127.0.0.1` in the application
-terminal before starting/restarting it. Private/local destinations are blocked by default.
-With the scheduler application running, create an immediately due one-time job:
-
-```bash
-set -a; source .env; set +a
-BASE=http://localhost:8080/api/v1
-JOB_ID=$(curl -fsS -H "X-API-Key: $SCHEDULER_API_KEY" "$BASE/jobs" -H 'Content-Type: application/json' \
-  -d '{"name":"engine-demo","jobType":"HTTP","scheduleType":"ONE_TIME","runAt":"2020-01-01T00:00:00Z","payload":{"url":"http://127.0.0.1:9090/","method":"GET","expectedStatus":[200]}}' \
-  | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
-curl -fsS -H "X-API-Key: $SCHEDULER_API_KEY" "$BASE/jobs/$JOB_ID/runs"
-curl -fsS -H "X-API-Key: $SCHEDULER_API_KEY" "$BASE/jobs/$JOB_ID"
-```
-
-Repeat the last two commands after a poll. The run becomes SUCCEEDED and the job
-becomes COMPLETED. For a cron example, replace scheduleType/runAt with
-`"scheduleType":"CRON","cronExpression":"*/5 * * * * *"` and use a new name.
-Each recurring completion computes its next slot from completion time; long runs do
-not build a backlog of missed slots. A live lease prevents another worker claiming
-that job, and heartbeat renewals keep long runs reserved.
-
-A second application process may use the same exported database environment and
-`SERVER_PORT=8081 ./mvnw spring-boot:run`. Workers have unique HOSTNAME-plus-random IDs.
-Use `SCHEDULER_ENABLED=false` to disable polling when inspecting API behavior.
-Set SCHEDULER_ROLE to ALL, API, or WORKER as described below.
-
-HTTP supports method, headers, body, expectedStatus, and per-job timeoutSeconds.
-Defaults are POST with no body and any 2xx response accepted. Redirects are not followed.
-Responses retain at most 4 KB of UTF-8 summary; error records use sanitized failure names.
-Executors are Spring JobExecutor beans; the registry rejects unknown types on creation.
-
-While a live lease exists, PUT/DELETE/resume/trigger return 409. Pause remains available;
-it prevents future claims and survives completion, while the current run can finish.
-Native engine writes advance version, so fetch the current version before editing.
-
-### Delivery semantics and current scope
-
-Delivery is **at-least-once**. A worker can die after the target accepts a request but
-before recording success, and a later worker can execute it again after lease expiry.
-Targets must implement idempotent handling where duplicate effects matter.
-X-Job-Id, X-Job-Run-Id, and X-Job-Attempt identify the job and this execution attempt;
-new retries/recoveries get new run IDs, not a stable business idempotency key.
-
-The automated concurrency test runs two independent loops/runners against one PostgreSQL
-and verifies 500 jobs, 500 successes, exactly one executor call per job, and both node IDs.
-It also verifies capacity limits, SKIP LOCKED, expired lease claims, ownership fencing,
-heartbeat renewal, and a cron request to WireMock. Run it directly with:
-
-```bash
-./mvnw -Dtest=EngineIntegrationTest verify
-```
-
-## Reliability (Phase 4)
-
-A failure gets up to maxRetries additional attempts: maxRetries=2 means at most three
-executions. Delays use min(initial × multiplier^retry_count, maximum), then ±10% jitter.
-A successful retry resets retry_count. An exhausted one-time job becomes DEAD_LETTER
-and keeps its retry count for diagnosis; a recurring job resets retries and advances
-to its next slot from completion time. Committed dead letters increment scheduler_dead_letter_total.
-
-Timeouts interrupt the executor and record TIMED_OUT; plugins must honor interruption
-and their deadline. Heartbeats renew only the active run's unexpired owner lease.
-A reclaimed job fences older RUNNING attempts, including when the node ID is the same.
-Starting an old claim snapshot fails, and an old run cannot renew or complete a newer one.
-
-The janitor runs on the poll loop every 30 seconds. It marks expired or replaced-owner
-RUNNING rows LOST and deletes finished/lost history older than 30 days, in transactions
-of at most 1,000 rows per step. Concurrent janitors skip locked rows. A takeover also
-marks the old attempt LOST immediately, without waiting for the next janitor pass.
-
-Misfire behavior uses the agreed 60-second lateness threshold, measured with the database
-claim timestamp. FIRE_ONCE_NOW executes once, then advances from completion time.
-SKIP advances a stale recurring job without execution, and completes a stale one-time
-job without creating a run. It leaves recent due jobs and explicit retries eligible.
-Relevant settings (all environment-overridable) are:
-
-```yaml
-scheduler:
-  misfire-threshold: 60s
-  janitor-interval: 30s
-  run-retention-days: 30
-  shutdown-grace-period: 60s
-```
-
-Shutdown first stops claims, waits up to the grace period for active work, then interrupts
-unfinished executors and expires/releases this node's leases. Clearing the owner also
-fences a heartbeat already in flight. If PostgreSQL is unavailable, shutdown logs the
-release failure and recovery falls back to natural lease expiry. Spring's shutdown
-phase timeout is 75 seconds, exceeding the default scheduler grace; increase it too
-when increasing scheduler.shutdown-grace-period.
-
-Polling catches database errors and exponentially increases its base delay up to 30 seconds
-(or the configured poll interval if larger), with ±20% jitter. Recovery resets it to the
-normal interval. Pool borrowing, connection establishment, statements, and socket reads
-have bounded waits. Startup still requires PostgreSQL for Flyway and schema validation.
-
-Run the reliability and concurrency scenarios with Java 21 and Docker available:
-
-```bash
-./mvnw -Dtest=EngineIntegrationTest,PollingResilienceTest,BackoffPolicyTest verify
-```
-
-| Tested failure | Observed behavior |
+| Setting | Default / meaning |
 | --- | --- |
-| Worker loses execution/heartbeats without completion | Another worker claims after natural expiry; old run LOST, new run SUCCEEDED. |
-| Repeated executor failure | Three attempts with growing ~1s/~2s delays, then DEAD_LETTER; committed metric increments. |
-| Retry eventually succeeds | Job completes and retry_count resets. Recurring exhaustion instead advances the next slot. |
-| Timeout or ownership loss during execution | Executor is interrupted; timeout records TIMED_OUT; lease loss cannot overwrite the new owner. |
-| Shutdown with enough grace | In-flight run succeeds and no new jobs are claimed. |
-| Shutdown with insufficient grace | Executor is interrupted, lease released immediately, replacement completes the job. |
-| Injected database errors | Polling survives and resumes after errors stop; shutdown tolerates release failure. |
-| Overdue SKIP jobs | Recurring jobs advance and one-time jobs complete without execution; retries still run. |
-| Abandoned/old history | Janitor marks expired/replaced runs LOST and purges in batches, preserving live/recent history. |
+| scheduler.role | ALL; API disables engine, WORKER exposes only actuator |
+| scheduler.poll-interval / batch-size | 2s ±20% jitter / 20 |
+| scheduler.max-concurrent-runs | 50, enforced before claiming |
+| scheduler.lease-duration / heartbeat-interval | 60s / 20s; heartbeat ≤ lease/3 |
+| scheduler.shutdown-grace-period | 60s; Spring phase budget 75s, pod budget 90s |
+| scheduler.janitor-interval / run-retention-days | 30s / 30 days |
+| scheduler.misfire-threshold | 60s |
+| DB_URL / DB_USER / DB_PASSWORD | Connection supplied via env; password has no committed default |
+| SCHEDULER_API_KEY | Required for API/ALL; no default; WORKER does not need it |
+| SCHEDULER_HTTP_ALLOWED_HOSTS | Empty by default; explicit exact-host exceptions |
 
-The 500-job/two-worker test continues to pass. A separate packaged-application SIGKILL
-check also demonstrated recovery: two unique HTTP attempts, one LOST and one SUCCEEDED
-run, and the job COMPLETED. This demonstrates why delivery remains at-least-once.
+Hikari defaults to 10 connections locally; Kubernetes sets 5 per pod. Size total DB connections
+for peak API/worker replicas plus rollout/admin headroom. A connection is used briefly for DB
+operations, not held per HTTP run. HTTP supports method/headers/body/expectedStatus and deadline;
+defaults are POST/no body/any 2xx. Responses retain at most 4 KB of UTF-8 summary.
 
-## Observability and security (Phase 5)
+API keys are compared as fixed-size hashes with constant-time equality. Missing/wrong/duplicate
+keys return 401; public-path aliases are rejected. Actuator health/info/Prometheus remain open
+for internal access. Limit their network exposure. Swagger's Authorize button supplies the key.
+Payloads are capped at 64 KB serialized JSON, raw POST/PUT bodies at 128 KB, nesting at 100 levels.
+Diagnostic DTOs redact payload/response bodies. Structured Logstash JSON includes scoped job/run/
+node MDC on poll, heartbeat, and virtual execution threads; context is restored afterward.
 
-API/ALL startup requires a nonempty SCHEDULER_API_KEY; there is no default key or bypass.
-Load `.env` in each client terminal and send `X-API-Key: $SCHEDULER_API_KEY`.
-The filter compares fixed-size SHA-256 digests with MessageDigest.isEqual, rejects
-missing/wrong/duplicate keys with 401, and rejects ambiguous path aliases before public-route
-exemptions. Credentials are never included in error responses or diagnostic DTO strings.
-Swagger UI and OpenAPI remain public in API/ALL; use the UI's Authorize button to call the API.
-Health/info/Prometheus endpoints remain unauthenticated for cluster-internal probing/scraping.
-
-| SCHEDULER_ROLE | REST routes | Job polling/execution |
-| --- | --- | --- |
-| ALL (default) | API, docs, actuator | Enabled |
-| API | API, docs, actuator | Disabled; a housekeeping task refreshes backlog gauges |
-| WORKER | Actuator only; API/docs return 404 | Enabled; no API key required |
-
-SSRF checks resolve all A/AAAA addresses at creation/update and again before execution.
-Loopback, link-local/cloud metadata, private IPv4, IPv6 unique-local, multicast/unspecified,
-and IPv4 transition addresses are rejected. A mixed public/private DNS answer is rejected.
-Redirects and system HTTP proxies are disabled. Explicit, case-insensitive exact hosts in
-scheduler.http.allowed-hosts override address restrictions for local development and tests;
-subdomains/wildcards do not match automatically. Default: empty allowlist, public targets only.
-The Java HTTP client performs its own connection resolution: this guard does not pin DNS
-answers to sockets. Use network egress restrictions where rebinding-resistant enforcement is needed.
-
-All executor types receive a 64 KB UTF-8 serialized payload limit. The API also limits raw
-POST/PUT bodies to 128 KB (413) and JSON nesting to 100 levels. HTTP payload validation remains
-in place. Structured Logstash JSON logs include jobId, runId, and nodeId on execution/heartbeat
-threads, including virtual threads; MDC scopes restore/clear context afterward. Headers,
-keys, URLs/payloads, and response bodies are omitted from diagnostic record representations.
-
-Readiness includes readinessState and the database health check. Flyway must finish before
-application startup completes. A DB outage returns 503 from `/actuator/health/readiness`,
-while `/actuator/health/liveness` stays 200; restart storms do not help a database outage.
-Readiness also fails while the application is refusing traffic during startup/shutdown.
+SSRF protection checks every resolved IPv4/IPv6 address at validation and execution. Private,
+loopback, link-local/metadata, unspecified/multicast and transition addresses are blocked; mixed
+public/private DNS answers and failures are rejected. Exact-host overrides are for intentional
+local/test destinations; wildcard/suffix matches are not allowed. Redirects and system proxies
+are disabled. Java HttpClient resolves connections separately: these checks do not pin sockets
+to DNS answers. Use network egress enforcement where rebinding-resistant guarantees are needed.
 
 ```bash
 curl -fsS http://localhost:8080/actuator/prometheus
@@ -279,107 +253,39 @@ curl -fsS http://localhost:8080/actuator/health/readiness
 curl -fsS http://localhost:8080/actuator/health/liveness
 ```
 
+Readiness checks traffic state and DB connectivity after Flyway startup. Liveness checks only
+process health. A real DB stop returned readiness 503/liveness 200; DB restart restored readiness
+and polling. [Captured Prometheus output](docs/PROMETHEUS_SAMPLE.txt) shows all scheduler series.
+
 | Micrometer name | Meaning |
 | --- | --- |
-| scheduler_jobs_due | Global ACTIVE jobs due at the last successful DB snapshot, including leased jobs |
-| scheduler_lag_seconds | Database-clock age of the oldest due job |
-| scheduler_claim_duration | Claim transaction timer, including failed claims |
-| scheduler_claimed_total | Successfully claimed job count on this process |
-| scheduler_running | Active local run coordinators |
-| scheduler_run_duration | Run timer tagged by registered executor type and outcome |
-| scheduler_runs_total | Local finished attempts tagged by type/outcome, including LOST attempts |
-| scheduler_dead_letter_total | Committed one-time dead-letter transitions on this process |
+| scheduler_jobs_due / scheduler_lag_seconds | Cached global due count/oldest due age, including leased jobs |
+| scheduler_claim_duration / scheduler_claimed_total | Claim transaction timer / committed claims |
+| scheduler_running | Active run coordinators on this pod |
+| scheduler_run_duration / scheduler_runs_total | Attempt duration/count, tags type/outcome |
+| scheduler_dead_letter_total | Committed local dead-letter transitions |
 
-Worker gauges refresh every poll, even when capacity is full. API pods refresh global backlog
-without claiming jobs. Scraping reads cached values and never queries PostgreSQL; during an
-outage the gauges retain their last successful snapshot. Do not sum the duplicated global
-backlog across pods; use max. Sum local running/counter series as appropriate.
-Timers export `_seconds_count`, `_seconds_sum`, and `_seconds_max` series.
+Timers expose `_seconds_count`, `_seconds_sum`, `_seconds_max`. Worker gauges refresh every
+poll, including at capacity; API housekeeping refreshes backlog without claiming jobs. Scraping
+never queries the DB; outages retain the last successful snapshot. Use max across duplicated
+global backlog series, sum local running/counters, and avoid job IDs as metric labels. Increase
+workers while watching lag, due count, CPU, DB pool/connection limits, and target rate limits.
+KEDA/custom-metric scaling, extra executors, Helm, and tenant management are not implemented.
 
-[Captured Prometheus output](docs/PROMETHEUS_SAMPLE.txt) comes from the packaged application
-with one successful HTTP run, one failed/dead-lettered run, and one in-flight HTTP run.
-The verification also stopped/restarted its isolated database: readiness changed 200 → 503 → 200,
-liveness stayed 200, and polling recovered. Tests cover authentication, roles, SSRF, health,
-payload bounds, metric updates, secret-safe diagnostics, and virtual-thread MDC propagation.
+## CI/CD and verification status
 
-## Docker (Phase 6)
-
-The same image runs API and WORKER roles. Compose starts PostgreSQL, one API, and two
-workers by default. Stop a locally running Maven application before binding the same API port.
-Export the source revision so image tags/labels identify the build:
+[CI workflow](.github/workflows/ci.yml) verifies Java/Testcontainers tests and all Kustomize
+variants, then runs the Docker crash smoke on GitHub runners. Actions are pinned by commit SHA.
+A successful push to main additionally builds/pushes amd64+arm64 images tagged with the full
+source SHA to GHCR. Java bytecode is built on the builder's native architecture. Package access
+follows GitHub/GHCR permissions; production pods need pull authorization for private packages.
 
 ```bash
-set -a; source .env; set +a
-export IMAGE_TAG="$(git rev-parse --short HEAD)"
-docker compose up -d --build --wait --scale app-worker=3
-curl -fsS http://localhost:8080/actuator/health/readiness
-docker compose logs -f app-worker
+gh run list --workflow ci.yml
+gh run view RUN_ID --log-failed
 ```
 
-API_PORT defaults to 8080; DB_PORT controls the host database port as before. Container
-connections always use postgres:5432, independent of the host's DB_URL/DB_PORT.
-The image uses Maven/JDK 21 to build, then Temurin 21 JRE with UID/GID 10001 to run.
-Only the app JAR enters the final image. JAVA_OPTS defaults to -XX:MaxRAMPercentage=75.
-Compose drops capabilities, prevents privilege escalation, makes the root filesystem
-read-only, provides a writable /tmp tmpfs, and allows 90 seconds for graceful termination.
-The wrapper's ZIP checksum is preserved by installing unzip in the build stage.
-The image build packages code; `./mvnw verify` separately runs the full Docker-backed tests.
-
-Run the isolated destructive smoke scenario (Docker access, Python 3, and Git required):
-
-```bash
-./scripts/smoke.sh
-```
-
-It creates a fresh Compose project with temporary credentials, API port 18090, DB port
-15437, and a JDK-only test receiver on 19091. Override SMOKE_API_PORT/SMOKE_DB_PORT/
-SMOKE_TARGET_PORT if occupied. It scales to three workers, creates 100 one-time jobs,
-kills the worker executing the first HTTP request, and checks all jobs finish with one
-SUCCEEDED record each. The receiver deduplicates effects by job ID (appropriate only
-for these one-time jobs). The other 99 jobs must have exactly one HTTP attempt.
-The interrupted job must show an abandoned LOST run and a repeated HTTP attempt.
-This proves recovery and exactly one receiver effect, not exactly-once scheduler delivery.
-The script prints all counts and removes only its own containers/volume on exit.
-KEEP_STACK=1 retains that isolated project and prints the mode-600 credentials file path.
-The test receiver is an optional smoke profile, built from test classes with no new dependencies;
-it is not included in the production app image or its normal Compose services.
-
-## Kubernetes (Phase 7)
-
-Manifests use Kustomize: base contains API/worker Deployments, Service, ConfigMap, worker PDB,
-CPU HPA (min 2/max 10), probes, resource bounds, security contexts, and 90-second termination.
-The local overlay adds PostgreSQL 16 with persistent storage and disables the HPA so manual
-1 → 5 → 1 scaling is not overridden. Prod keeps HPA and uses a managed DB connection from Secret.
-Secret templates contain placeholders and are excluded from apply; create actual credentials first.
-The prod overlay mounts a separately supplied scheduler-database-ca ConfigMap for verified TLS.
-
-Run the complete isolated local exercise (Docker, kind, kubectl, Python 3, and Git required):
-
-```bash
-./scripts/k8s-smoke.sh
-# To retain the test cluster for inspection:
-KEEP_CLUSTER=1 ./scripts/k8s-smoke.sh
-```
-
-This builds/loads SHA-tagged images, creates a fresh cluster/namespace/credentials, deploys
-PostgreSQL and the app, runs 100 jobs across worker counts 1 → 5 → 1, and deletes the pod
-owning a live job. Graceful termination finishes that run; a replacement drains remaining work.
-The test asserts 100 successes, zero LOST runs, and exactly 100 HTTP attempts/effects.
-It refuses to replace an existing scheduler namespace. KEEP_CLUSTER=1 prints the retained
-kubeconfig/credential paths (mode 600); otherwise it cleans up only its own cluster/namespace.
-
-Render deployable manifests with an explicit git SHA without editing committed templates:
-
-```bash
-./scripts/render-k8s.sh local "$(git rev-parse --short HEAD)"
-./scripts/render-k8s.sh prod "$(git rev-parse HEAD)"
-```
-
-The renderer uses kubectl kustomize, then replaces only image-tag placeholders. Validate
-with `kubectl apply --dry-run=server -f -`, or apply after creating the Secret and loading/
-publishing that image. API access uses `kubectl -n scheduler port-forward svc/scheduler-api 8080:80`.
-The local test receiver/SSRF host override exist only in k8s/smoke, not the production overlay.
-PDB protects voluntary evictions; direct kubectl delete bypasses PDB, while normal pod deletion
-still honors graceful termination. A force kill can repeat HTTP attempts, as the Docker test shows.
-CPU HPA requires metrics-server; the local manual exercise does not install or test CPU autoscaling.
-See docs/VERIFICATION.md for exact verification commands and observed counts.
+See [PROGRESS](docs/PROGRESS.md), [learning notes](docs/HOW_IT_WORKS.md), and
+[exact verification commands/results](docs/VERIFICATION.md) for the phase history and Definition
+of Done audit. The verification distinguishes normal/graceful exactly-once observations from
+at-least-once crash recovery, and schema-validated cloud/HPA manifests from actual cloud rollout.

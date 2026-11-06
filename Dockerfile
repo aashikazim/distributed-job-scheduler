@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM maven:3.9.11-eclipse-temurin-21 AS build
+FROM --platform=$BUILDPLATFORM maven:3.9.11-eclipse-temurin-21 AS build
 # The wrapper pins the ZIP checksum; unzip prevents fallback to a different tarball.
 RUN apt-get update && apt-get install -y --no-install-recommends unzip && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
