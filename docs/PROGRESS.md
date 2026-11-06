@@ -236,6 +236,15 @@
 - Phases 6 (334c739), 7 (e76759b), and 8 (5b88065 plus this final audit) were committed separately
   in order. No further phases or stretch executors were started.
 
+## Beginner learning guides
+
+- Added seven Q&A chapters plus a reading index in `docs/learning`, linked from README and HOW_IT_WORKS.
+- Covers Spring Boot startup/beans, request flow/annotations, PostgreSQL access and coordination,
+  testing/smoke checks, Docker, Kubernetes orchestration, scaling, and crash recovery.
+- Includes source links, diagrams, practical exercises, and the limits of at-least-once delivery.
+- Documentation checks: 56 relative links resolve, 18 Bash blocks parse, and Markdown code fences
+  and whitespace checks pass. Application tests were not rerun for this documentation-only change.
+
 ## Deferred
 
 - Main-only GHCR publication/pull has not run; it requires a successful main push. CI is green

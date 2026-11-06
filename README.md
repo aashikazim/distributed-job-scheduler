@@ -19,6 +19,12 @@ scale separately. The implementation, failure tests, and local deployments are c
 [verification evidence and limits](docs/VERIFICATION.md) distinguish tested behavior from
 cloud/publishing work requiring your environment.
 
+## Learning the project
+
+New to Spring Boot, databases, testing, Docker, or Kubernetes? Start with the
+[beginner Q&A guides](docs/learning/README.md), which follow this project
+from an HTTP request to worker execution and scaling.
+
 ## Quickstart with Docker
 
 Requires Docker Engine with Compose v2, Git, and Python 3 for credential/smoke helpers.

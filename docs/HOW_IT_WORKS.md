@@ -1,5 +1,8 @@
 # How it works
 
+For a beginner reading path with detailed questions and answers, see the
+[learning guides](learning/README.md).
+
 ## Phase 0 — Application skeleton
 
 Spring Boot starts the web server and wires the application components together.
