@@ -24,8 +24,32 @@
 - Docker access worked using `sg docker -c '...'` to apply newly granted group membership.
   Verification used temporary Compose port 15432 and application port 18080 because host
   port 5432 was occupied. No existing database was stopped; temporary resources were removed.
-- Next: Phase 2 API (not started).
+- Phase 2 API is complete below.
+
+## Phase 2 — API
+
+- Added record DTOs and all job endpoints: create/get/list/update/delete/pause/resume/trigger.
+- Added paginated, stable sorting and combined status/type/case-insensitive literal-name filters.
+- PUT replaces a definition, requires its current version, and recalculates nextRunAt only
+  for schedule changes. Duplicate names and stale edits return 409.
+- Added schedule calculations for six-field cron, fixed rate, and one-time schedules;
+  timezone validation and tests cover spring DST gaps and fall DST overlaps.
+- Added HTTP payload configuration validation (including a 64 KB UTF-8 JSON limit).
+  Execution/registry integration remains in Phase 3; SSRF enforcement remains in Phase 5.
+- Added ProblemDetail errors with validation fields, and springdoc OpenAPI/Swagger UI.
+- Defined state actions: repeated pause is a no-op; resume activates/recalculates;
+  trigger activates and sets nextRunAt from PostgreSQL now(). Resume/trigger reset retries.
+- Verification: `./mvnw verify` passed: 45 tests, 0 failures/errors/skips
+  (12 API, 8 scheduling, 16 payload-validation, 8 persistence, 1 clock).
+- Packaged application health returned UP against isolated Compose PostgreSQL 16.
+  Manual curl flow passed: create 201; list/pause/resume/trigger/get/update 200;
+  stale update 409; OpenAPI 200; delete 204; subsequent get 404.
+  Temporary verification ports: database 15433, HTTP 18082; resources cleaned up afterward.
+- Added runnable curl examples and documented schedule/state/version behavior in README.
+- Next: Phase 3 engine, executor registry, HTTP execution, atomic claims, and run-history endpoints.
+  Phase 3 has not started.
 
 ## Deferred
 
-- None for Phases 0–1.
+- None for Phases 0–2. Engine execution/run history, reliability, and security follow
+  their planned later phases.
