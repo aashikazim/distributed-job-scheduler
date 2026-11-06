@@ -49,6 +49,15 @@
 - Next: Phase 3 engine, executor registry, HTTP execution, atomic claims, and run-history endpoints.
   Phase 3 has not started.
 
+## Local setup fix — Database port collision
+
+- Made the Compose host port configurable with DB_PORT (default 5432).
+- Documented using port 15432 and a matching DB_URL when another project owns 5432.
+- Updated the ignored local .env without changing credentials.
+- Verified Compose PostgreSQL health, Flyway V1/V2 startup, application health UP,
+  and HTTP 200 from the jobs API against the scheduler database on port 15432.
+- Left scheduler PostgreSQL running; stopped the temporary verification app.
+
 ## Deferred
 
 - None for Phases 0–2. Engine execution/run history, reliability, and security follow

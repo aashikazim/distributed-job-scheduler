@@ -41,7 +41,11 @@ needed for those tests: Testcontainers supplies temporary database credentials.
 See [learning notes](docs/HOW_IT_WORKS.md) for schema ownership, JSONB, and version locking.
 If you were just added to the Docker group, restart your login session to activate it.
 For the current session, `sg docker -c './mvnw verify'` applies that membership to the build.
-The default Compose database port is 5432; it must be available before starting PostgreSQL.
+The default Compose database port is 5432. If another project uses it, set
+`DB_PORT=15432` and `DB_URL=jdbc:postgresql://localhost:15432/scheduler` in `.env`,
+then export `.env` again and run `docker compose up -d --wait postgres`.
+A password-authentication error can mean the app reached the other project's database.
+Changing the port keeps the projects separate.
 
 ## Try the API (Phase 2)
 
