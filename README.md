@@ -301,3 +301,45 @@ with one successful HTTP run, one failed/dead-lettered run, and one in-flight HT
 The verification also stopped/restarted its isolated database: readiness changed 200 → 503 → 200,
 liveness stayed 200, and polling recovered. Tests cover authentication, roles, SSRF, health,
 payload bounds, metric updates, secret-safe diagnostics, and virtual-thread MDC propagation.
+
+## Docker (Phase 6)
+
+The same image runs API and WORKER roles. Compose starts PostgreSQL, one API, and two
+workers by default. Stop a locally running Maven application before binding the same API port.
+Export the source revision so image tags/labels identify the build:
+
+```bash
+set -a; source .env; set +a
+export IMAGE_TAG="$(git rev-parse --short HEAD)"
+docker compose up -d --build --wait --scale app-worker=3
+curl -fsS http://localhost:8080/actuator/health/readiness
+docker compose logs -f app-worker
+```
+
+API_PORT defaults to 8080; DB_PORT controls the host database port as before. Container
+connections always use postgres:5432, independent of the host's DB_URL/DB_PORT.
+The image uses Maven/JDK 21 to build, then Temurin 21 JRE with UID/GID 10001 to run.
+Only the app JAR enters the final image. JAVA_OPTS defaults to -XX:MaxRAMPercentage=75.
+Compose drops capabilities, prevents privilege escalation, makes the root filesystem
+read-only, provides a writable /tmp tmpfs, and allows 90 seconds for graceful termination.
+The wrapper's ZIP checksum is preserved by installing unzip in the build stage.
+The image build packages code; `./mvnw verify` separately runs the full Docker-backed tests.
+
+Run the isolated destructive smoke scenario (Docker access, Python 3, and Git required):
+
+```bash
+./scripts/smoke.sh
+```
+
+It creates a fresh Compose project with temporary credentials, API port 18090, DB port
+15437, and a JDK-only test receiver on 19091. Override SMOKE_API_PORT/SMOKE_DB_PORT/
+SMOKE_TARGET_PORT if occupied. It scales to three workers, creates 100 one-time jobs,
+kills the worker executing the first HTTP request, and checks all jobs finish with one
+SUCCEEDED record each. The receiver deduplicates effects by job ID (appropriate only
+for these one-time jobs). The other 99 jobs must have exactly one HTTP attempt.
+The interrupted job must show an abandoned LOST run and a repeated HTTP attempt.
+This proves recovery and exactly one receiver effect, not exactly-once scheduler delivery.
+The script prints all counts and removes only its own containers/volume on exit.
+KEEP_STACK=1 retains that isolated project and prints the mode-600 credentials file path.
+The test receiver is an optional smoke profile, built from test classes with no new dependencies;
+it is not included in the production app image or its normal Compose services.

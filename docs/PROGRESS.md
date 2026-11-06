@@ -167,10 +167,32 @@
 - Generated a random key only in the ignored local .env because its API key was empty;
   did not print it or change an existing configured key. Updated README curl examples to
   load the environment/send the header and require explicit local-host allowance for the demo.
-- Next: Phase 6 Docker image, full Compose API/workers, and smoke script. Stopped before Phase 6.
+- Phase 6 Docker verification is complete below.
+
+## Phase 6 — Docker
+
+- Added multi-stage Maven/JDK 21 → Temurin 21 JRE image, dependency cache, pinned-wrapper
+  checksum support via unzip, non-root UID/GID 10001, exec entrypoint, JAVA_OPTS heap sizing,
+  source revision label, image healthcheck, and .dockerignore excluding secrets/build outputs.
+- Expanded Compose to PostgreSQL 16, API, and two scalable workers by default. App containers
+  have read-only root filesystems, /tmp tmpfs, dropped capabilities, no privilege escalation,
+  memory/CPU bounds, health dependency, and a 90-second stop grace period.
+- Added scripts/smoke.sh plus a standard-library Python driver and JDK-only optional test receiver.
+  The script creates an isolated project/credentials, starts three workers, creates 100 jobs,
+  kills the worker in the first HTTP run, and cleans up only its own stack/volume.
+- Verification: `./mvnw verify` passed, 111 tests, 0 failures/errors/skips. Docker images built
+  successfully using the current git SHA tag. Runtime checks passed: UID 10001, read-only
+  filesystem, healthy readiness. `docker compose ... --scale app-worker=3` ran successfully.
+- Crash smoke result: 100 COMPLETED jobs; 100 SUCCEEDED records; 1 LOST record; 101 HTTP
+  attempts; 100 logical receiver effects. The other 99 jobs had exactly one HTTP attempt.
+  The killed worker's request was retried after lease expiry. Receiver deduplication by stable
+  one-time job ID prevented a duplicate effect; exactly-once scheduler delivery is not claimed.
+- Documented Docker commands and appended learning notes. No runtime dependency/schema changes.
+- Next: Phase 7 Kubernetes. Phase 6 committed before starting Phase 7.
 
 ## Deferred
 
-- None for the specified Phase 5 checks. DNS/socket pinning is not provided by Java HttpClient;
-  the application's DNS checks complement deployment-level egress restrictions.
-- Container hardening and the full Compose topology remain in Phase 6, as planned.
+- DNS/socket pinning is not provided by Java HttpClient; application DNS checks complement
+  deployment-level egress restrictions.
+- Crash tests intentionally distinguish repeated attempts from deduplicated effects, consistent
+  with the specified at-least-once semantics. Arbitrary external effects cannot be guaranteed once.

@@ -100,3 +100,15 @@ Logstash JSON includes scoped job/run/node MDC; execution and heartbeat threads 
 Readiness checks the DB and traffic state; liveness checks process state so DB outages do not cause restart storms.
 The real outage check returned readiness 503/liveness 200, then recovered both readiness and polling after DB restart.
 The key concept: global backlog describes shared work; local run metrics and logs explain what each pod is doing.
+
+## Phase 6 — Containers and a real worker crash
+
+A multi-stage build uses Maven/JDK 21 to compile and copies only the app JAR into a JRE image.
+The runtime has a fixed non-root user; Compose makes its filesystem read-only except for temporary storage.
+The entrypoint uses exec so Java receives SIGTERM directly and can run the scheduler shutdown sequence.
+API and worker containers use one image and connect to PostgreSQL by its Compose service name.
+A readiness healthcheck gates startup, while a 90-second stop budget exceeds the scheduler's grace period.
+The smoke test creates 100 jobs and kills the worker after the target accepted the first request but before acknowledgment.
+A surviving worker retries after lease expiry, and the old run becomes LOST while the replacement succeeds.
+The test receiver records one effect per job ID and counts repeated HTTP attempts separately.
+The key concept: a container restart is safe for durable jobs, but an external effect still needs idempotency.
