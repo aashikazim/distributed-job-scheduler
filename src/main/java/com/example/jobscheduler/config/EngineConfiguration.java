@@ -3,6 +3,7 @@ package com.example.jobscheduler.config;
 import java.time.Clock;
 
 import com.example.jobscheduler.engine.JobRunner;
+import com.example.jobscheduler.engine.Janitor;
 import com.example.jobscheduler.engine.SchedulerLoop;
 import com.example.jobscheduler.executor.ExecutorRegistry;
 import com.example.jobscheduler.repository.JobClaimRepository;
@@ -19,9 +20,9 @@ public class EngineConfiguration {
     @Bean(destroyMethod = "")
     @ConditionalOnProperty(name = "scheduler.enabled", havingValue = "true", matchIfMissing = true)
     public SchedulerLoop schedulerLoop(JobClaimRepository claims, JobExecutionRepository executions,
-                                       ExecutorRegistry executors, SchedulerProperties properties, Clock clock) {
+                                       ExecutorRegistry executors, SchedulerProperties properties, Clock clock, Janitor janitor) {
         var node = NodeId.create();
         var runner = new JobRunner(executions, executors, properties, clock, node);
-        return new SchedulerLoop(claims, executions, runner, properties, node);
+        return new SchedulerLoop(claims, executions, runner, properties, node, janitor);
     }
 }

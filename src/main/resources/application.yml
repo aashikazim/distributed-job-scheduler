@@ -1,4 +1,9 @@
 spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 75s
+  jdbc:
+    template:
+      query-timeout: 5s
   application:
     name: job-scheduler
   datasource:
@@ -7,6 +12,11 @@ spring:
     password: ${DB_PASSWORD}
     hikari:
       maximum-pool-size: 10
+      connection-timeout: 10000
+      data-source-properties:
+        connectTimeout: 5
+        socketTimeout: 10
+        cancelSignalTimeout: 2
   jpa:
     open-in-view: false
     hibernate:
@@ -24,6 +34,8 @@ scheduler:
   heartbeat-interval: 20s
   shutdown-grace-period: 60s
   run-retention-days: 30
+  janitor-interval: 30s
+  misfire-threshold: 60s
 management:
   endpoint:
     health:

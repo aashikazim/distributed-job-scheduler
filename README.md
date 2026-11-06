@@ -166,8 +166,68 @@ heartbeat renewal, and a cron request to WireMock. Run it directly with:
 ./mvnw -Dtest=EngineIntegrationTest verify
 ```
 
-Phase 4 will add the abandoned-run janitor and retention purge, misfire SKIP handling,
-DB-outage backoff, and the full crash-recovery/retry/shutdown test scenarios. Basic
-heartbeat, timeout, retry transitions, and bounded shutdown waiting are already wired
-into this phase's execution path. Until the janitor arrives, a process crash or lease
-loss can leave its old RUNNING history row pending cleanup, even after a new run starts.
+## Reliability (Phase 4)
+
+A failure gets up to maxRetries additional attempts: maxRetries=2 means at most three
+executions. Delays use min(initial × multiplier^retry_count, maximum), then ±10% jitter.
+A successful retry resets retry_count. An exhausted one-time job becomes DEAD_LETTER
+and keeps its retry count for diagnosis; a recurring job resets retries and advances
+to its next slot from completion time. Committed dead letters increment scheduler_dead_letter_total.
+
+Timeouts interrupt the executor and record TIMED_OUT; plugins must honor interruption
+and their deadline. Heartbeats renew only the active run's unexpired owner lease.
+A reclaimed job fences older RUNNING attempts, including when the node ID is the same.
+Starting an old claim snapshot fails, and an old run cannot renew or complete a newer one.
+
+The janitor runs on the poll loop every 30 seconds. It marks expired or replaced-owner
+RUNNING rows LOST and deletes finished/lost history older than 30 days, in transactions
+of at most 1,000 rows per step. Concurrent janitors skip locked rows. A takeover also
+marks the old attempt LOST immediately, without waiting for the next janitor pass.
+
+Misfire behavior uses the agreed 60-second lateness threshold, measured with the database
+claim timestamp. FIRE_ONCE_NOW executes once, then advances from completion time.
+SKIP advances a stale recurring job without execution, and completes a stale one-time
+job without creating a run. It leaves recent due jobs and explicit retries eligible.
+Relevant settings (all environment-overridable) are:
+
+```yaml
+scheduler:
+  misfire-threshold: 60s
+  janitor-interval: 30s
+  run-retention-days: 30
+  shutdown-grace-period: 60s
+```
+
+Shutdown first stops claims, waits up to the grace period for active work, then interrupts
+unfinished executors and expires/releases this node's leases. Clearing the owner also
+fences a heartbeat already in flight. If PostgreSQL is unavailable, shutdown logs the
+release failure and recovery falls back to natural lease expiry. Spring's shutdown
+phase timeout is 75 seconds, exceeding the default scheduler grace; increase it too
+when increasing scheduler.shutdown-grace-period.
+
+Polling catches database errors and exponentially increases its base delay up to 30 seconds
+(or the configured poll interval if larger), with ±20% jitter. Recovery resets it to the
+normal interval. Pool borrowing, connection establishment, statements, and socket reads
+have bounded waits. Startup still requires PostgreSQL for Flyway and schema validation.
+
+Run the reliability and concurrency scenarios with Java 21 and Docker available:
+
+```bash
+./mvnw -Dtest=EngineIntegrationTest,PollingResilienceTest,BackoffPolicyTest verify
+```
+
+| Tested failure | Observed behavior |
+| --- | --- |
+| Worker loses execution/heartbeats without completion | Another worker claims after natural expiry; old run LOST, new run SUCCEEDED. |
+| Repeated executor failure | Three attempts with growing ~1s/~2s delays, then DEAD_LETTER; committed metric increments. |
+| Retry eventually succeeds | Job completes and retry_count resets. Recurring exhaustion instead advances the next slot. |
+| Timeout or ownership loss during execution | Executor is interrupted; timeout records TIMED_OUT; lease loss cannot overwrite the new owner. |
+| Shutdown with enough grace | In-flight run succeeds and no new jobs are claimed. |
+| Shutdown with insufficient grace | Executor is interrupted, lease released immediately, replacement completes the job. |
+| Injected database errors | Polling survives and resumes after errors stop; shutdown tolerates release failure. |
+| Overdue SKIP jobs | Recurring jobs advance and one-time jobs complete without execution; retries still run. |
+| Abandoned/old history | Janitor marks expired/replaced runs LOST and purges in batches, preserving live/recent history. |
+
+The 500-job/two-worker test continues to pass. A separate packaged-application SIGKILL
+check also demonstrated recovery: two unique HTTP attempts, one LOST and one SUCCEEDED
+run, and the job COMPLETED. This demonstrates why delivery remains at-least-once.

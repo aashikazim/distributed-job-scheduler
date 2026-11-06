@@ -87,15 +87,49 @@
   polling produced one HTTP 200, one SUCCEEDED run, and one COMPLETED job; health/history/detail
   endpoints returned 200. Temporary resources were cleaned up; existing databases were untouched.
 - Added README commands and delivery/overlap explanations; HOW_IT_WORKS includes a sequence diagram.
-- Next: Phase 4 reliability, including crash recovery, janitor, misfire handling,
-  database-outage backoff, and expanded retry/shutdown scenarios. Stopped before Phase 4.
+- Phase 4 reliability is complete below.
+
+## Phase 4 — Reliability
+
+- Added the agreed configurable 60-second misfire threshold. SKIP advances stale recurring
+  jobs and completes stale one-time jobs without execution; explicit retries remain eligible.
+  FIRE_ONCE_NOW still executes once and computes the next slot from completion time.
+- Added a janitor in the poll loop (default every 30 seconds) that marks expired/replaced-owner
+  RUNNING attempts LOST and purges terminal history older than run-retention-days (default 30),
+  in batches of at most 1,000 rows. Locks/ownership decisions use the database clock.
+- Claims fence abandoned runs in the claim transaction. Claim-version checks reject delayed
+  old starts; active run-ID checks fence old heartbeat/completion writes, including same-node
+  takeovers. Row locks coordinate claim/start/heartbeat/completion/janitor without covering execution.
+- Hardened runner cleanup, timeout interruption, and lease-loss cancellation. Failed attempts
+  retry with exponential capped backoff and jitter. Successful retries reset the count;
+  one-time exhaustion keeps its retry count and dead-letters; recurring exhaustion advances
+  the next slot and resets retries. Dead-letter metrics increment only after commit.
+- Hardened idempotent SmartLifecycle shutdown: stop polling, wait for in-flight work, then
+  cancel unfinished work and clear/expire owned leases. Owner clearing fences late heartbeats.
+  If DB release fails, shutdown tolerates the outage and leases expire naturally.
+- Added polling outage backoff/reset and bounded connection/query/socket waits. Spring's
+  shutdown-phase budget is 75s, above the default worker grace period of 60s.
+- Final `./mvnw verify` passed on Java 21: 76 tests, 0 failures/errors/skips.
+  Section 12 tests 3–6 all passed:
+  - Concurrency: two independent loops processed 500 jobs exactly once during normal operation.
+  - Recovery: stopped execution/heartbeats without completion/release; another worker took
+    over after natural lease expiry; old run LOST, replacement SUCCEEDED.
+  - Retries: maxRetries=2 produced attempts 1/2/3 with jittered ~1s/~2s delays, then DEAD_LETTER.
+    Eventual success reset retries; exhausted recurring failure advanced its next schedule slot.
+  - Shutdown: enough grace allowed in-flight success and stopped new claims; insufficient
+    grace interrupted execution and released the lease for immediate replacement execution.
+- Additional tests passed: timeout interruption/TIMED_OUT, heartbeat lease-loss cancellation,
+  same-node stale claim/run fencing, live/replaced/expired janitor cases, retention batch bounds,
+  misfire SKIP/FIRE_ONCE_NOW/retry behavior, and injected DB polling/release failures.
+- Real packaged-process recovery check passed against isolated Compose PostgreSQL 16:
+  SIGKILL during HTTP execution; a second application recovered the job. Two unique HTTP
+  attempts, one LOST and one SUCCEEDED history row, job COMPLETED. This confirms at-least-once
+  behavior; it does not imply exactly-once external effects. Verification resources were cleaned up.
+- Updated README failure-scenario table and HOW_IT_WORKS learning notes.
+- Next: Phase 5 observability/security. Stopped before Phase 5.
 
 ## Deferred
 
-- Phase 4, as planned: abandoned RUNNING rows need a janitor to become LOST after a process
-  crash/lease loss; old-run retention purge and misfire SKIP handling are not implemented yet.
-- Phase 4: polling currently catches failures and retries with normal poll jitter; explicit
-  database-outage backoff and full crash/retry/shutdown test scenarios remain to be delivered.
-- Phase 5, as planned: SSRF guard, API key auth, scheduler metrics/MDC, role-specific enabling,
-  and the readiness/liveness split. Engine polling can currently be disabled via scheduler.enabled.
-- No phase-3 schema changes or edits to applied migrations.
+- Phase 5, as planned: SSRF guard, API key auth, remaining scheduler metrics/MDC, role-specific
+  enabling, and readiness/liveness split. Polling can currently be disabled via scheduler.enabled.
+- No dependency additions, schema changes, or edits to applied migrations in Phase 4.

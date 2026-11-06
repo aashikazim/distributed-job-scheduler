@@ -36,7 +36,7 @@ public class JobClaimRepository {
         if (limit < 1) {
             return List.of();
         }
-        return jdbc.sql("""
+        var claimed = jdbc.sql("""
                 UPDATE jobs
                 SET locked_by = :nodeId,
                     locked_until = now() + make_interval(secs => :leaseSeconds),
@@ -50,10 +50,18 @@ public class JobClaimRepository {
                     LIMIT :batchSize
                     FOR UPDATE SKIP LOCKED
                 )
-                RETURNING *
+                RETURNING *, now() AS claimed_at
                 """)
                 .param("nodeId", nodeId).param("leaseSeconds", lease.toMillis() / 1000.0)
                 .param("batchSize", limit).query((rs, row) -> map(rs)).list();
+        // Fence old attempts before making a replacement lease visible, even on the same node.
+        for (var job : claimed) {
+            jdbc.sql("""
+                    UPDATE job_runs SET status = 'LOST', finished_at = now(), error_message = 'Lease ownership lost'
+                    WHERE job_id = :job AND status = 'RUNNING'
+                    """).param("job", job.id()).update();
+        }
+        return claimed;
     }
 
     private ClaimedJob map(ResultSet rs) throws SQLException {
@@ -63,7 +71,9 @@ public class JobClaimRepository {
                     rs.getString("cron_expression"), rs.getObject("fixed_rate_seconds", Integer.class),
                     instant(rs, "run_at"), rs.getString("timezone"), instant(rs, "next_run_at"),
                     rs.getInt("retry_count"), rs.getInt("max_retries"), rs.getInt("timeout_seconds"),
-                    rs.getInt("backoff_initial_secs"), rs.getBigDecimal("backoff_multiplier"), rs.getInt("backoff_max_secs"));
+                    rs.getInt("backoff_initial_secs"), rs.getBigDecimal("backoff_multiplier"), rs.getInt("backoff_max_secs"),
+                    com.example.jobscheduler.domain.MisfirePolicy.valueOf(rs.getString("misfire_policy")),
+                    instant(rs, "claimed_at"), rs.getLong("version"));
         } catch (JsonProcessingException ex) {
             throw new SQLException("Stored job payload is invalid JSON", ex);
         }

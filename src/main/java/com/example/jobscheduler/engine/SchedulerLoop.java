@@ -21,6 +21,10 @@ public class SchedulerLoop implements SmartLifecycle, AutoCloseable {
     private final JobRunner runner;
     private final SchedulerProperties properties;
     private final String nodeId;
+    private final Janitor janitor;
+    private final PollingBackoff backoff;
+    private long nextCleanup;
+    private final java.util.concurrent.atomic.AtomicBoolean stopped = new java.util.concurrent.atomic.AtomicBoolean();
     private final Semaphore slots;
     private final ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor();
     private final ScheduledExecutorService polling = Executors.newSingleThreadScheduledExecutor(
@@ -28,17 +32,22 @@ public class SchedulerLoop implements SmartLifecycle, AutoCloseable {
     private volatile boolean running;
 
     public SchedulerLoop(JobClaimRepository claims, JobExecutionRepository executions, JobRunner runner,
-                         SchedulerProperties properties, String nodeId) {
+                         SchedulerProperties properties, String nodeId, Janitor janitor) {
         this.claims = claims;
         this.executions = executions;
         this.runner = runner;
         this.properties = properties;
         this.nodeId = nodeId;
+        this.janitor = janitor;
+        backoff = new PollingBackoff(properties.pollInterval());
         slots = new Semaphore(properties.maxConcurrentRuns());
     }
 
     @Override
     public synchronized void start() {
+        if (stopped.get()) {
+            throw new IllegalStateException("A stopped scheduler cannot be restarted");
+        }
         if (!running) {
             running = true;
             schedule(0);
@@ -52,13 +61,23 @@ public class SchedulerLoop implements SmartLifecycle, AutoCloseable {
     }
 
     private void poll() {
+        long delay;
         try {
+            long now = System.nanoTime(); // Local elapsed cadence only; lease decisions use PostgreSQL now().
+            if (nextCleanup == 0 || now - nextCleanup >= 0) {
+                janitor.markLost();
+                janitor.purge(properties.runRetentionDays());
+                nextCleanup = now + properties.janitorInterval().toNanos();
+            }
             claimAndSubmit();
+            delay = backoff.success();
         } catch (Exception ex) {
-            log.warn("Polling failed on node {} ({}); retrying", nodeId, ex.getClass().getSimpleName());
-        } finally {
-            schedule(Math.max(1, (long) (properties.pollInterval().toMillis()
-                    * ThreadLocalRandom.current().nextDouble(0.8, 1.2))));
+            delay = backoff.failure();
+            log.warn("Polling failed on node {} ({}); backing off", nodeId, ex.getClass().getSimpleName());
+        }
+        synchronized (this) {
+            // Serialize with shutdown: no rejected scheduling race after polling.shutdownNow().
+            schedule(Math.max(1, (long) (delay * ThreadLocalRandom.current().nextDouble(0.8, 1.2))));
         }
     }
 
@@ -101,8 +120,12 @@ public class SchedulerLoop implements SmartLifecycle, AutoCloseable {
 
     @Override
     public void stop() {
+        if (!stopped.compareAndSet(false, true)) {
+            return;
+        }
+        // Publish first: a poll finishing its DB call must not schedule another iteration.
+        running = false;
         synchronized (this) {
-            running = false;
             polling.shutdownNow();
             workers.shutdown();
         }
@@ -115,7 +138,12 @@ public class SchedulerLoop implements SmartLifecycle, AutoCloseable {
             Thread.currentThread().interrupt();
         } finally {
             runner.close();
-            executions.release(nodeId);
+            try {
+                executions.release(nodeId);
+            } catch (Exception ex) {
+                // PostgreSQL may be down during shutdown. Existing leases still expire naturally.
+                log.warn("Lease release failed on node {} ({}); leases will expire", nodeId, ex.getClass().getSimpleName());
+            }
         }
     }
 

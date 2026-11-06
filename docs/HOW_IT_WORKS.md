@@ -74,3 +74,16 @@ janitor that labels abandoned RUNNING history rows LOST, plus the crash-recovery
 A crash after the HTTP effect but before completion can repeat that effect: this is
 at-least-once delivery. The 500-job test demonstrates no duplicate executions during
 normal concurrent operation; it does not turn delivery into a global exactly-once guarantee.
+
+## Phase 4 — Failure and recovery
+
+A lease is temporary ownership: heartbeats keep it alive; a dead process cannot renew it.
+Claims fence abandoned runs before a replacement lease becomes visible, even on the same node.
+Starting work checks the claim version, and renewal/completion check the active run as well as the owner.
+The janitor locks jobs and history briefly, marks abandoned attempts LOST, and purges old terminal runs in batches.
+Retries count extra attempts; delays grow exponentially with jitter, success resets retries, and poison one-time jobs dead-letter.
+Timeouts interrupt cooperative executors; they cannot undo effects the target has already accepted.
+SKIP ignores slots older than the agreed 60-second cutoff, while explicit retries still execute.
+Shutdown stops claims before waiting; on grace expiry it cancels work and clears ownership so another worker can resume.
+Polling survives database errors with backoff; if shutdown cannot reach PostgreSQL, leases expire naturally.
+The key concept: recovery can repeat an external effect, so at-least-once execution still needs idempotent targets.
