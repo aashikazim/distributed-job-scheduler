@@ -39,4 +39,8 @@ Docker access and fails if Docker is unavailable. No external database or `.env`
 needed for those tests: Testcontainers supplies temporary database credentials.
 
 See [learning notes](docs/HOW_IT_WORKS.md) for schema ownership, JSONB, and version locking.
+If you were just added to the Docker group, restart your login session to activate it.
+For the current session, `sg docker -c './mvnw verify'` applies that membership to the build.
+The default Compose database port is 5432; it must be available before starting PostgreSQL.
+
 The REST API and job engine are delivered in later phases.
