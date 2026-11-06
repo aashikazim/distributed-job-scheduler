@@ -102,8 +102,72 @@ Schedule rules:
 
 Payloads must be JSON objects of at most 64 KB, with valid HTTP(S) URLs, methods,
 headers, body strings, and expected status codes. Unknown job types return 422.
-HTTP execution and its registry arrive in Phase 3. SSRF protection and API key auth arrive
-in Phase 5. This phase stores job definitions and marks jobs due; it does not send webhooks.
+The HTTP executor and registry are available. SSRF protection and API key auth arrive
+in Phase 5. The default engine polls every 2 seconds with ±20% jitter.
 
 OpenAPI JSON: `/v3/api-docs`. Interactive API documentation: `/swagger-ui.html`.
-Run-history endpoints arrive with the engine in Phase 3.
+Run history is available at `/api/v1/jobs/{id}/runs?page=0&size=20` and `/api/v1/runs/{id}`.
+
+## Try the engine (Phase 3)
+
+In a separate terminal, run an empty local HTTP target:
+
+```bash
+mkdir -p /tmp/scheduler-webhook-demo
+python3 -m http.server 9090 --bind 127.0.0.1 --directory /tmp/scheduler-webhook-demo
+```
+
+With the scheduler application running, create an immediately due one-time job:
+
+```bash
+BASE=http://localhost:8080/api/v1
+JOB_ID=$(curl -fsS "$BASE/jobs" -H 'Content-Type: application/json' \
+  -d '{"name":"engine-demo","jobType":"HTTP","scheduleType":"ONE_TIME","runAt":"2020-01-01T00:00:00Z","payload":{"url":"http://127.0.0.1:9090/","method":"GET","expectedStatus":[200]}}' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+curl -fsS "$BASE/jobs/$JOB_ID/runs"
+curl -fsS "$BASE/jobs/$JOB_ID"
+```
+
+Repeat the last two commands after a poll. The run becomes SUCCEEDED and the job
+becomes COMPLETED. For a cron example, replace scheduleType/runAt with
+`"scheduleType":"CRON","cronExpression":"*/5 * * * * *"` and use a new name.
+Each recurring completion computes its next slot from completion time; long runs do
+not build a backlog of missed slots. A live lease prevents another worker claiming
+that job, and heartbeat renewals keep long runs reserved.
+
+A second application process may use the same exported database environment and
+`SERVER_PORT=8081 ./mvnw spring-boot:run`. Workers have unique HOSTNAME-plus-random IDs.
+Use `SCHEDULER_ENABLED=false` to disable polling when inspecting API behavior.
+Role-specific enabling is still scheduled for Phase 5.
+
+HTTP supports method, headers, body, expectedStatus, and per-job timeoutSeconds.
+Defaults are POST with no body and any 2xx response accepted. Redirects are not followed.
+Responses retain at most 4 KB of UTF-8 summary; error records use sanitized failure names.
+Executors are Spring JobExecutor beans; the registry rejects unknown types on creation.
+
+While a live lease exists, PUT/DELETE/resume/trigger return 409. Pause remains available;
+it prevents future claims and survives completion, while the current run can finish.
+Native engine writes advance version, so fetch the current version before editing.
+
+### Delivery semantics and current scope
+
+Delivery is **at-least-once**. A worker can die after the target accepts a request but
+before recording success, and a later worker can execute it again after lease expiry.
+Targets must implement idempotent handling where duplicate effects matter.
+X-Job-Id, X-Job-Run-Id, and X-Job-Attempt identify the job and this execution attempt;
+new retries/recoveries get new run IDs, not a stable business idempotency key.
+
+The automated concurrency test runs two independent loops/runners against one PostgreSQL
+and verifies 500 jobs, 500 successes, exactly one executor call per job, and both node IDs.
+It also verifies capacity limits, SKIP LOCKED, expired lease claims, ownership fencing,
+heartbeat renewal, and a cron request to WireMock. Run it directly with:
+
+```bash
+./mvnw -Dtest=EngineIntegrationTest verify
+```
+
+Phase 4 will add the abandoned-run janitor and retention purge, misfire SKIP handling,
+DB-outage backoff, and the full crash-recovery/retry/shutdown test scenarios. Basic
+heartbeat, timeout, retry transitions, and bounded shutdown waiting are already wired
+into this phase's execution path. Until the janitor arrives, a process crash or lease
+loss can leave its old RUNNING history row pending cleanup, even after a new run starts.

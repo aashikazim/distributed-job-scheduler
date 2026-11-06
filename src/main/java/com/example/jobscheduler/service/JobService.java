@@ -15,7 +15,7 @@ import com.example.jobscheduler.api.JobResponse;
 import com.example.jobscheduler.api.PageResponse;
 import com.example.jobscheduler.domain.Job;
 import com.example.jobscheduler.domain.JobStatus;
-import com.example.jobscheduler.executor.HttpPayloadValidator;
+import com.example.jobscheduler.executor.ExecutorRegistry;
 import com.example.jobscheduler.repository.JobRepository;
 import jakarta.persistence.criteria.Predicate;
 import org.springframework.data.domain.PageRequest;
@@ -31,11 +31,11 @@ import org.springframework.transaction.annotation.Transactional;
 public class JobService {
     private final JobRepository jobs;
     private final ScheduleCalculator schedules;
-    private final HttpPayloadValidator payloads;
+    private final ExecutorRegistry payloads;
     private final Clock clock;
     private final JdbcClient jdbc;
 
-    public JobService(JobRepository jobs, ScheduleCalculator schedules, HttpPayloadValidator payloads,
+    public JobService(JobRepository jobs, ScheduleCalculator schedules, ExecutorRegistry payloads,
                       Clock clock, JdbcClient jdbc) {
         this.jobs = jobs;
         this.schedules = schedules;
@@ -84,6 +84,7 @@ public class JobService {
 
     public JobResponse update(UUID id, JobRequest request) {
         var job = find(id);
+        requireNotRunning(id);
         if (request.version() == null) {
             throw badVersion("version is required for PUT");
         }
@@ -105,7 +106,9 @@ public class JobService {
     }
 
     public void delete(UUID id) {
-        jobs.delete(find(id));
+        var job = find(id);
+        requireNotRunning(id);
+        jobs.delete(job);
         jobs.flush();
     }
 
@@ -120,6 +123,7 @@ public class JobService {
 
     public JobResponse resume(UUID id) {
         var job = find(id);
+        requireNotRunning(id);
         job.setStatus(JobStatus.ACTIVE);
         job.setRetryCount(0);
         job.setNextRunAt(next(job));
@@ -130,6 +134,7 @@ public class JobService {
     /** Trigger only changes durable state; a later worker claims the job asynchronously. */
     public JobResponse trigger(UUID id) {
         var job = find(id);
+        requireNotRunning(id);
         Instant now = jdbc.sql("SELECT now()").query(OffsetDateTime.class).single().toInstant();
         job.setStatus(JobStatus.ACTIVE);
         job.setRetryCount(0);
@@ -138,13 +143,21 @@ public class JobService {
         return JobResponse.from(job);
     }
 
+    private void requireNotRunning(UUID id) {
+        boolean running = jdbc.sql("SELECT locked_by IS NOT NULL AND locked_until > now() FROM jobs WHERE id = :id")
+                .param("id", id).query(Boolean.class).single();
+        if (running) {
+            throw new ApiException(HttpStatus.CONFLICT, "Job is leased; retry after the current run finishes");
+        }
+    }
+
     private Job find(UUID id) {
         return jobs.findById(id).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Job not found"));
     }
 
     private void validate(JobRequest request) {
         schedules.validate(request);
-        payloads.validate(request.jobType(), request.payload());
+        payloads.get(request.jobType()).validatePayload(request.payload());
     }
 
     private Instant next(Job job) {

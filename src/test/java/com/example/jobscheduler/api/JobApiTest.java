@@ -27,7 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-@SpringBootTest
+@SpringBootTest(properties = "scheduler.enabled=false")
 @AutoConfigureMockMvc
 @Import(JobApiTest.FixedTime.class)
 class JobApiTest extends PostgresIntegrationTest {
@@ -207,6 +207,41 @@ class JobApiTest extends PostgresIntegrationTest {
                 .andExpect(jsonPath("$.paths['/api/v1/jobs']").exists());
         mvc.perform(get("/swagger-ui.html")).andExpect(status().is3xxRedirection());
         mvc.perform(get("/swagger-ui/index.html")).andExpect(status().isOk());
+    }
+
+    @Test
+    void historyEndpointsReturnRecordsAndValidatePaginationAndIds() throws Exception {
+        var job = create(definition("history-api"));
+        var jobId = UUID.fromString(job.path("id").asText());
+        var runId = UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO job_runs (id, job_id, attempt, status, scheduled_for, started_at, finished_at, node_id, result_summary)
+                VALUES (?, ?, 1, 'SUCCEEDED', now(), now(), now(), 'test-node', 'HTTP 200')
+                """, runId, jobId);
+        mvc.perform(get(path(job) + "/runs").param("size", "1"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.totalElements").value(1))
+                .andExpect(jsonPath("$.content[0].id").value(runId.toString()));
+        mvc.perform(get("/api/v1/runs/" + runId)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("SUCCEEDED"));
+        mvc.perform(get("/api/v1/runs/" + UUID.randomUUID())).andExpect(status().isNotFound());
+        mvc.perform(get("/api/v1/jobs/" + UUID.randomUUID() + "/runs")).andExpect(status().isNotFound());
+        mvc.perform(get(path(job) + "/runs").param("size", "101")).andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void liveLeaseRejectsMutationButAllowsPause() throws Exception {
+        var job = create(definition("leased"));
+        jdbc.update("UPDATE jobs SET locked_by = 'worker', locked_until = now() + interval '1 minute', version = version + 1 WHERE id = ?",
+                UUID.fromString(job.path("id").asText()));
+        for (var action : new String[]{"resume", "trigger"}) {
+            mvc.perform(post(path(job) + "/" + action)).andExpect(status().isConflict());
+        }
+        mvc.perform(put(path(job)).contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsBytes(definition("leased").put("version", 1))))
+                .andExpect(status().isConflict());
+        mvc.perform(delete(path(job))).andExpect(status().isConflict());
+        mvc.perform(post(path(job) + "/pause")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("PAUSED"));
     }
 
     private ObjectNode definition(String name) {

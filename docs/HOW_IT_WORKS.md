@@ -36,3 +36,41 @@ Pause is idempotent, resume recalculates due time, and trigger uses PostgreSQL n
 The HTTP payload validator checks configuration without making requests; execution comes in Phase 3.
 ProblemDetail gives clients a consistent error format, including field names for validation failures.
 The key concept: an API request saves intent; a worker will later claim and execute that intent.
+
+## Phase 3 — Claim, lease, execute, record
+
+SchedulerLoop reserves semaphore permits before JobClaimRepository claims up to that many due rows.
+FOR UPDATE SKIP LOCKED means a second worker passes over rows currently being claimed instead of waiting.
+The claim transaction writes an owner and expiry, then commits; no row lock survives into execution.
+That saved lease is a time-limited reservation, renewed by database-clock heartbeats while the job runs.
+JobRunner creates a RUNNING row and invokes the executor with a unique run ID, attempt, and deadline.
+JobExecutionRepository finishes the run and advances the job together, only if the lease is still owned and valid.
+One-time success becomes COMPLETED; recurring jobs compute their next slot from completion time, with no overlap backlog.
+Failures retry with capped exponential backoff and jitter; exhausted one-time jobs dead-letter, recurring jobs advance.
+Claims/completions advance version; JPA updates only dirty columns, so API edits cannot restore old lease values.
+The key concept: short row locks arbitrate claims; durable leases coordinate the longer execution outside transactions.
+
+```mermaid
+sequenceDiagram
+    participant A as Worker A
+    participant DB as PostgreSQL
+    participant B as Worker B
+    participant HTTP as HTTP target
+    A->>DB: Claim due job J (short transaction)
+    Note over DB: Lock J, set owner A + lease expiry
+    B->>DB: Claim due jobs with SKIP LOCKED
+    DB-->>B: Other unlocked jobs
+    DB-->>A: Commit claim and release row lock
+    A->>DB: Insert RUNNING run
+    A->>HTTP: Execute with X-Job-* headers
+    A->>DB: Heartbeat extends A's unexpired lease
+    HTTP-->>A: HTTP result
+    A->>DB: Complete run + advance J, WHERE owner = A
+    Note over DB: Clear lease; commit outcome and next time
+```
+
+If A dies, its lease eventually expires and B can claim J again. Phase 4 adds the
+janitor that labels abandoned RUNNING history rows LOST, plus the crash-recovery tests.
+A crash after the HTTP effect but before completion can repeat that effect: this is
+at-least-once delivery. The 500-job test demonstrates no duplicate executions during
+normal concurrent operation; it does not turn delivery into a global exactly-once guarantee.
