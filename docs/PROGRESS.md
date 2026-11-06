@@ -213,7 +213,7 @@
   remain in a mode-600 file and are not committed. Existing Docker services were untouched.
 - Phase 7 committed as e76759b before starting Phase 8.
 
-## Phase 8 — CI/CD and final documentation (remote CI check pending)
+## Phase 8 — CI/CD and final documentation
 
 - Added SHA-pinned GitHub Actions: Java 21/Testcontainers verify, script checks, checksum-verified
   kubectl and all Kustomize rendering, test-report artifacts, then Docker build/100-job crash smoke.
@@ -227,11 +227,19 @@
   existing file. Verified fresh setup and preservation of existing credentials in a temporary copy.
 - Local `./mvnw verify`: 111 tests passed, zero failures/errors/skips. README/cloud Bash examples,
   helper script syntax, and all Kustomize rendering passed. Running K8s worker pool limit confirmed
-  through Prometheus at 5 connections. Remote CI is the remaining Phase 8 check.
+  through Prometheus at 5 connections.
+- Remote GitHub Actions CI passed on implementation commit 5b88065, verification branch
+  codex/finish-phases-6-8: verify and docker-smoke both successful. Main-only publish was
+  intentionally skipped. Run: https://github.com/aashikazim/distributed-job-scheduler/actions/runs/42177732423
+- Definition of Done audited in docs/DEFINITION_OF_DONE.md: all six implementation/local/CI
+  items verified, with crash semantics and production-environment limits called out explicitly.
+- Phases 6 (334c739), 7 (e76759b), and 8 (5b88065 plus this final audit) were committed separately
+  in order. No further phases or stretch executors were started.
 
 ## Deferred
 
-- Remote CI verification is pending; main-only GHCR publication requires a successful main push.
+- Main-only GHCR publication/pull has not run; it requires a successful main push. CI is green
+  on the verification branch, and all implementation changes are committed locally.
 - Cloud guides were researched against provider documentation but not run in paid cloud accounts.
 - CPU HPA was schema-validated but not exercised with metrics-server/load; local manual scaling passed.
 - DNS/socket pinning is not provided by Java HttpClient; application DNS checks complement egress controls.

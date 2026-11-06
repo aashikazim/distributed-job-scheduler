@@ -4,7 +4,7 @@ This audit follows AGENTS.md section 17. Evidence is in [VERIFICATION.md](VERIFI
 
 | Item | Evidence/status |
 | --- | --- |
-| All phases; Maven verify; CI green | Phases 0–8 implementation complete; local 111 tests pass; remote CI pending |
+| All phases; Maven verify; CI green | Verified: phases 0–8 complete, 111 local tests pass, GitHub verify/Docker-smoke jobs green |
 | Exactly-once-per-slot under 2–4 workers | Verified for 500 one-time slots across two independent loops; all execute once during normal operation |
 | Crash recovery, automated plus container check | Verified natural-expiry takeover and Docker active-worker kill; old run LOST, replacement SUCCEEDED |
 | Non-root image, probes | Verified Docker UID 10001/read-only root/healthy readiness and Kubernetes UID 10001/probes |
@@ -15,7 +15,11 @@ A hard crash is not a global exactly-once guarantee: Docker observed 101 attempt
 with 100 deduplicated receiver effects. The normal automated and graceful K8s checks observed
 exactly-once execution; those observations do not change at-least-once delivery semantics.
 
-Not yet verified: remote CI, main-only GHCR publish/pull, cloud deployment/TLS in an actual
+Not yet verified: main-only GHCR publish/pull, cloud deployment/TLS in an actual
 EKS/GKE/AKS account, or CPU HPA under metrics-server/load. DNS/socket pinning is not implemented;
 network egress controls are needed for rebinding-resistant enforcement. KEDA and other stretch
 items were intentionally not added.
+
+CI evidence: [successful implementation run](https://github.com/aashikazim/distributed-job-scheduler/actions/runs/42177732423),
+commit 5b88065 on codex/finish-phases-6-8. Publishing was skipped because the verification
+branch is not main. Subsequent final-audit changes are documentation only.

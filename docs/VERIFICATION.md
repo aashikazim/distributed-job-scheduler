@@ -50,3 +50,33 @@ six node identities. Final app/database/receiver pods Ready; 1Gi PVC Bound; work
 111 Maven tests passed, none skipped. Base/prod API-server dry-runs passed without modifying
 the running smoke overlay. CPU HPA is retained in prod but intentionally absent in the local
 manual exercise; metrics-server/CPU autoscaling was not exercised.
+
+## Phase 8 — CI/CD and final docs
+
+Local commands passed:
+
+```bash
+./mvnw verify
+bash -n docker/entrypoint.sh scripts/*.sh
+python3 -m py_compile scripts/*.py
+./scripts/render-k8s.sh prod "$(git rev-parse HEAD)"
+```
+
+111 tests passed, zero failures/errors/skips. All README/cloud Bash blocks passed syntax
+checks and relative documentation links resolved. The fresh .env helper was exercised in a
+temporary copy: random credentials created with mode 600, existing configuration preserved.
+Docker builds Java on BUILDPLATFORM so multi-platform publishing avoids emulated compilation.
+
+Remote CI was executed by pushing implementation commit 5b88065 to
+codex/finish-phases-6-8. [Run 42177732423](https://github.com/aashikazim/distributed-job-scheduler/actions/runs/42177732423)
+completed successfully: verify passed (Java/Testcontainers, syntax, Kustomize, reports),
+docker-smoke passed (native amd64 image plus active-worker crash scenario: UID 10001,
+read-only/healthy; 100 completed jobs, 100 successes, 1 LOST, 101 HTTP attempts, 100 effects), publish skipped
+because this was a verification branch. The earlier local Docker/kind checks ran on arm64.
+The workflow is configured to publish amd64/arm64 SHA-tagged GHCR images after successful main
+pushes; that publication/pull path has not been executed during this task.
+
+All six AGENTS.md section 17 items are audited in [DEFINITION_OF_DONE.md](DEFINITION_OF_DONE.md).
+Cloud provider deployments/TLS and CPU HPA load response remain environment-specific and
+unverified. The kind cluster scheduler remains healthy for review, with kubeconfig at
+/tmp/scheduler-kind.kubeconfig; no preexisting Docker services or user kubeconfig were modified.

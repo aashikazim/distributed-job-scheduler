@@ -184,7 +184,9 @@ It creates a fresh cluster/namespace/credentials, scales workers 1 → 5 → 1, 
 owning a live run. Observed: 100 COMPLETED jobs, 100 SUCCEEDED runs, 0 LOST runs, 100 HTTP
 attempts/effects. KEEP_CLUSTER=1 prints kubeconfig/credential paths (mode 600); otherwise it
 cleans up only its own cluster/namespace. It refuses to replace an existing scheduler namespace.
-Use the printed kubeconfig, then `kubectl -n scheduler port-forward svc/scheduler-api 8080:80`.
+Export the printed KUBECONFIG path. To call this test API, also source its printed private
+credentials file; that key is separate from your normal .env. Then use
+`kubectl -n scheduler port-forward svc/scheduler-api 8080:80`.
 
 Base has separate API/worker Deployments, Service, ConfigMap, secret template, probes, resource
 limits, non-root/read-only security contexts, 90s termination, PDB minAvailable=1, and CPU HPA
@@ -286,6 +288,6 @@ gh run view RUN_ID --log-failed
 ```
 
 See [PROGRESS](docs/PROGRESS.md), [learning notes](docs/HOW_IT_WORKS.md), and
-[exact verification commands/results](docs/VERIFICATION.md) for the phase history and Definition
-of Done audit. The verification distinguishes normal/graceful exactly-once observations from
+[exact verification commands/results](docs/VERIFICATION.md), and the
+[Definition of Done audit](docs/DEFINITION_OF_DONE.md) for the phase history and final evidence. The verification distinguishes normal/graceful exactly-once observations from
 at-least-once crash recovery, and schema-validated cloud/HPA manifests from actual cloud rollout.
